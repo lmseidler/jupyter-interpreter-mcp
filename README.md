@@ -69,19 +69,6 @@ The server can be configured using environment variables. Create a `.env` file i
 
 **Note**: Notebook storage will eventually be handled by a JupyterHub container in future versions.
 
-## Version Management
-
-Package versions are automatically generated from git tags using `setuptools-scm`. To create a new version:
-
-1. Create a git tag following semantic versioning:
-   ```bash
-   git tag v0.1.0
-   ```
-
-2. The package version will automatically match the tag (e.g., `0.1.0`)
-
-3. If no tags exist, a development version will be generated (e.g., `0.1.0.dev0+<git-hash>`)
-
 ## Development Setup
 
 ### Installing Development Dependencies
@@ -140,33 +127,6 @@ pyupgrade --py310-plus src/**/*.py
 # Type check with mypy
 mypy src/jupyter_interpreter_mcp
 ```
-
-### Bypassing Pre-commit Hooks
-
-In rare cases where you need to bypass the hooks (not recommended):
-
-```bash
-git commit --no-verify
-```
-
-**Note**: This should only be used in exceptional circumstances, as it skips important code quality checks.
-
-### Troubleshooting
-
-**Pre-commit hooks fail on commit**
-- Run `pre-commit run --all-files` to see which checks are failing
-- Fix the issues manually or let auto-fixers (black, ruff) handle them
-- Stage the auto-fixed files with `git add` and commit again
-
-**Mypy type errors**
-- Ensure all public functions have type hints
-- Check that `py.typed` marker file exists in the package
-- Review mypy configuration in `pyproject.toml`
-
-**Hook installation issues**
-- Ensure you've installed dev dependencies: `uv pip install -e ".[dev]"`
-- Try reinstalling hooks: `pre-commit uninstall && pre-commit install`
-- Clear cache and retry: `pre-commit clean && pre-commit install`
 
 ## License
 
