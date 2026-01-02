@@ -40,4 +40,4 @@ repos:
     rev: v1.8.0
     hooks:
       - id: mypy
-        args: [--explicit-package-bases, --check-untyped-defs, --ignore-missing-imports]
+        args: [--explicit-package-bases, --check-untyped-defs]
