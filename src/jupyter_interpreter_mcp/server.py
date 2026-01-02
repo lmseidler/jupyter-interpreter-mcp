@@ -1,15 +1,18 @@
-import time
-from mcp.server.fastmcp import FastMCP, Context
-from jupyter_interpreter_mcp.notebook import Notebook
-from dotenv import load_dotenv
 import os
+import time
 from pathlib import Path
+
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
+
+from jupyter_interpreter_mcp.notebook import Notebook
 
 parent_folder = Path(__file__).resolve().parent
 env_path = parent_folder / ".env"
 
 load_dotenv(dotenv_path=env_path)
-# NOTE: Notebook storage will eventually be handled by a JupyterHub container (future work)
+# NOTE: Notebook storage will eventually be handled by a JupyterHub
+# container (future work)
 notebooks_folder_name = os.getenv("NOTEBOOKS_FOLDER", "notebooks")
 notebooks_folder = parent_folder / notebooks_folder_name
 
@@ -19,40 +22,51 @@ mcp = FastMCP(
     name="Code Interpreter",
     instructions="""
     You can execute Python code by sending a request with the code you want to run.
-    Think of this tool as a jupyter notebook. It will remember your previously executed code, if you pass in your session_id. 
+    Think of this tool as a jupyter notebook. It will remember your previously
+    executed code, if you pass in your session_id.
     It is crucial to remember your session_id for a smooth interaction.
     """,
 )
-sessions = {}
+sessions: dict[int, Notebook] = {}
 
 
 @mcp.tool(
     "execute_code",
-    description="""Executes Python code within a persistent session, retaining past results (e.g., variables, imports). Similar to a Jupyter notebook. A session_id is returned on first use and must be included in subsequent requests to maintain context.""",
+    description=(
+        "Executes Python code within a persistent session, retaining past results "
+        "(e.g., variables, imports). Similar to a Jupyter notebook. A session_id is "
+        "returned on first use and must be included in subsequent requests to "
+        "maintain context."
+    ),
 )
-async def execute_code(code: str, session_id: int = 0) -> dict:
+async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
     global sessions
-    """
-    Executes the provided Python code and returns the result.
-    
+    """Executes the provided Python code and returns the result.
+
     Args:
         code (str): The Python code to execute.
-        session_id (int, optional): A unique identifier used to associate multiple code execution requests
-            with the same logical session. If this is the first request, you may omit it or set it to 0.
-            The system will generate and return a new session_id, which should be reused in follow-up requests
-            to maintain continuity within the same session.
-    
+        session_id (int, optional): A unique identifier used to associate
+            multiple code execution requests with the same logical session.
+            If this is the first request, you may omit it or set it to 0.
+            The system will generate and return a new session_id, which
+            should be reused in follow-up requests to maintain continuity
+            within the same session.
+
     Returns:
-        dict: A dictionary containing the result or an error message.
+        dict[str, list[str]]: A dictionary with 'error' and 'result' keys,
+            each containing a list of strings.
     """
-    session_info = None
+    session_info: str | None = None
 
     if session_id == 0 or not os.path.exists(
         os.path.join(notebooks_folder, f"{session_id}.txt")
     ):
         session_id = int(time.time())
         sessions[session_id] = Notebook(session_id)
-        session_info = f"Your session_id for this chat is {session_id}. You should provide it for subsequent requests."
+        session_info = (
+            f"Your session_id for this chat is {session_id}. "
+            f"You should provide it for subsequent requests."
+        )
     elif not sessions.get(session_id):
         notebook = Notebook(session_id)
         notebook.load_from_file()
@@ -60,7 +74,7 @@ async def execute_code(code: str, session_id: int = 0) -> dict:
 
     try:
         notebook = sessions[session_id]
-        result = notebook.execute_new_code(code)
+        result: dict[str, list[str]] = notebook.execute_new_code(code)
         if session_info:
             result["result"].append(session_info)
         if len(result["error"]) == 0:
@@ -70,7 +84,7 @@ async def execute_code(code: str, session_id: int = 0) -> dict:
         return {"error": [str(e)], "result": []}
 
 
-def main():
+def main() -> None:
     """Entry point for the MCP server."""
     import sys
 

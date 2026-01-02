@@ -82,6 +82,92 @@ Package versions are automatically generated from git tags using `setuptools-scm
 
 3. If no tags exist, a development version will be generated (e.g., `0.1.0.dev0+<git-hash>`)
 
+## Development Setup
+
+### Installing Development Dependencies
+
+To work on this project, you'll need to install the development dependencies:
+
+```bash
+uv pip install -e ".[dev]"
+```
+
+This installs the package in editable mode along with development tools including:
+- `pre-commit` - Git hooks for code quality
+- `black` - Code formatter
+- `ruff` - Fast Python linter
+- `mypy` - Static type checker
+- `pyupgrade` - Python syntax modernizer
+
+### Setting Up Pre-commit Hooks
+
+Pre-commit hooks automatically check your code quality before each commit. To install them:
+
+```bash
+pre-commit install
+```
+
+Once installed, the hooks will run automatically on `git commit`. The hooks perform:
+- File hygiene checks (trailing whitespace, end-of-file fixes)
+- File validation (TOML, YAML syntax)
+- Large file detection (warns on files >10MB)
+- Debug statement detection
+- Code formatting with `black`
+- Linting with `ruff` (with auto-fix)
+- Python syntax upgrades with `pyupgrade` (Python 3.10+)
+- Type checking with `mypy`
+
+### Running Code Quality Checks Manually
+
+You can run all pre-commit hooks manually on all files:
+
+```bash
+pre-commit run --all-files
+```
+
+Or run individual tools:
+
+```bash
+# Format code with black
+black src/
+
+# Lint and auto-fix with ruff
+ruff check --fix src/
+
+# Upgrade Python syntax
+pyupgrade --py310-plus src/**/*.py
+
+# Type check with mypy
+mypy src/jupyter_interpreter_mcp
+```
+
+### Bypassing Pre-commit Hooks
+
+In rare cases where you need to bypass the hooks (not recommended):
+
+```bash
+git commit --no-verify
+```
+
+**Note**: This should only be used in exceptional circumstances, as it skips important code quality checks.
+
+### Troubleshooting
+
+**Pre-commit hooks fail on commit**
+- Run `pre-commit run --all-files` to see which checks are failing
+- Fix the issues manually or let auto-fixers (black, ruff) handle them
+- Stage the auto-fixed files with `git add` and commit again
+
+**Mypy type errors**
+- Ensure all public functions have type hints
+- Check that `py.typed` marker file exists in the package
+- Review mypy configuration in `pyproject.toml`
+
+**Hook installation issues**
+- Ensure you've installed dev dependencies: `uv pip install -e ".[dev]"`
+- Try reinstalling hooks: `pre-commit uninstall && pre-commit install`
+- Clear cache and retry: `pre-commit clean && pre-commit install`
+
 ## License
 
 MIT
