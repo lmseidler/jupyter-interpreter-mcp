@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools-scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jupyter-interpreter-mcp"
+description = "A Jupyter-based MCP server for code interpretation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dynamic = ["version"]
+
+dependencies = [
+    "mcp>=1.0.0",
+    "jupyter-client>=8.0.0",
+    "ipykernel>=7.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.scripts]
+jupyter-interpreter-mcp = "jupyter_interpreter_mcp.server:main"
+
+[tool.setuptools]
+packages = ["jupyter_interpreter_mcp"]
+package-dir = {"" = "src"}
+
+[tool.setuptools_scm]
+

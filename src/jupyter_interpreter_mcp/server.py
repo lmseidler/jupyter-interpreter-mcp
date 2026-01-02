@@ -17,8 +17,6 @@ notebooks_folder.mkdir(exist_ok=True)
 
 mcp = FastMCP(
     name="Code Interpreter",
-    version="2.0.0",
-    description="A simple code interpreter that executes Python code and returns the result.",
     instructions="""
     You can execute Python code by sending a request with the code you want to run.
     Think of this tool as a jupyter notebook. It will remember your previously executed code, if you pass in your session_id. 
@@ -74,6 +72,15 @@ async def execute_code(code: str, session_id: int = 0) -> dict:
 
 def main():
     """Entry point for the MCP server."""
+    import sys
+
+    # Handle --version flag
+    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
+        from importlib.metadata import version
+
+        print(f"jupyter-interpreter-mcp {version('jupyter-interpreter-mcp')}")
+        sys.exit(0)
+
     mcp.run()
 
 
