@@ -66,7 +66,7 @@ sessions: dict[int, Notebook] = {}
         "maintain context."
     ),
 )
-async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
+async def execute_code(code: str, session_id: int = 0) -> dict:
     global sessions
     """Executes the provided Python code and returns the result.
 
@@ -78,12 +78,10 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
         which should be reused in follow-up requests to maintain continuity within the
         same session.
     :type session_id: int, optional
-    :return: A dictionary with 'error' and 'result' keys, each containing a
-        list of strings.
-    :rtype: dict[str, list[str]]
+    :return: A dictionary with 'error' and 'result' keys (each containing a list of
+        strings), and 'session_id' key (containing the session ID as an integer).
+    :rtype: dict
     """
-    session_info: str | None = None
-
     # Create new session if session_id is 0 or session doesn't exist in memory
     if session_id == 0 or session_id not in sessions:
         # Generate new session_id if needed
@@ -99,21 +97,23 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
         # If session_id was provided but not in memory, it might exist on disk
         await notebook.load_from_file()
 
-        session_info = (
-            f"Your session_id for this chat is {session_id}. "
-            f"You should provide it for subsequent requests."
-        )
-
     try:
         notebook = sessions[session_id]
         result: dict[str, list[str]] = await notebook.execute_new_code(code)
-        if session_info:
-            result["result"].append(session_info)
+
+        # Add session_id to the response
+        response: dict = {
+            "error": result["error"],
+            "result": result["result"],
+            "session_id": session_id,
+        }
+
         if len(result["error"]) == 0:
             await notebook.dump_to_file()
-        return result
+
+        return response
     except Exception as e:
-        return {"error": [str(e)], "result": []}
+        return {"error": [str(e)], "result": [], "session_id": session_id}
 
 
 def main() -> None:
