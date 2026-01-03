@@ -3,8 +3,8 @@ import sys
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv  # type: ignore[import-not-found]
-from mcp.server.fastmcp import FastMCP  # type: ignore[import-not-found]
+from dotenv import load_dotenv  # type: ignore [import-not-found]
+from mcp.server.fastmcp import FastMCP  # type: ignore [import-not-found]
 
 from jupyter_interpreter_mcp.notebook import Notebook
 from jupyter_interpreter_mcp.remote import (
@@ -21,15 +21,13 @@ load_dotenv(dotenv_path=env_path)
 # Load configuration from environment
 base_url = os.getenv("JUPYTER_BASE_URL", "http://localhost:8888")
 token = os.getenv("JUPYTER_TOKEN")
-username = os.getenv("JUPYTER_USERNAME")
-password = os.getenv("JUPYTER_PASSWORD")
 notebooks_folder = os.getenv("NOTEBOOKS_FOLDER", "/home/jovyan/notebooks")
 
 # Initialize remote client
 try:
-    remote_client = RemoteJupyterClient(
-        base_url=base_url, auth_token=token, username=username, password=password
-    )
+    if not token:
+        raise ValueError("JUPYTER_TOKEN environment variable is required")
+    remote_client = RemoteJupyterClient(base_url=base_url, auth_token=token)
     # Validate connection on startup
     remote_client.validate_connection()
 except (JupyterConnectionError, JupyterAuthError) as e:
@@ -42,8 +40,7 @@ except (JupyterConnectionError, JupyterAuthError) as e:
 except ValueError as e:
     print(f"Invalid configuration: {e}", file=sys.stderr)
     print(
-        "Please provide either JUPYTER_TOKEN or both JUPYTER_USERNAME "
-        "and JUPYTER_PASSWORD.",
+        "Please provide JUPYTER_TOKEN.",
         file=sys.stderr,
     )
     sys.exit(1)

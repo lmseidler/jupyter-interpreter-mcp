@@ -25,25 +25,6 @@ class TestRemoteJupyterClientInit:
         )
         assert client.base_url == "http://localhost:8888"
         assert client.auth_token == "test-token"
-        assert client.username is None
-        assert client.password is None
-
-    def test_init_with_username_password(self):
-        """Test initialization with username/password authentication."""
-        client = RemoteJupyterClient(
-            base_url="http://localhost:8888", username="user", password="pass"
-        )
-        assert client.base_url == "http://localhost:8888"
-        assert client.auth_token is None
-        assert client.username == "user"
-        assert client.password == "pass"
-
-    def test_init_no_auth(self):
-        """Test initialization without authentication raises error."""
-        with pytest.raises(
-            ValueError, match="Either auth_token or both username and password"
-        ):
-            RemoteJupyterClient(base_url="http://localhost:8888")
 
     def test_init_strips_trailing_slash(self):
         """Test that base URL trailing slash is removed."""
@@ -63,16 +44,6 @@ class TestAuthHeaders:
         )
         headers = client._get_auth_headers()
         assert headers["Authorization"] == "token test-token"
-        assert headers["Content-Type"] == "application/json"
-
-    def test_get_auth_headers_with_basic_auth(self):
-        """Test auth headers with username/password (no token header)."""
-        client = RemoteJupyterClient(
-            base_url="http://localhost:8888", username="user", password="pass"
-        )
-        headers = client._get_auth_headers()
-        # Token auth takes precedence, basic auth is added separately
-        assert "Authorization" not in headers
         assert headers["Content-Type"] == "application/json"
 
 
@@ -137,20 +108,6 @@ class TestMakeRequest:
         with patch("requests.request", return_value=mock_response):
             with pytest.raises(JupyterAuthError, match="Authorization failed"):
                 client._make_request("GET", "/api/kernels")
-
-    def test_make_request_uses_basic_auth(self):
-        """Test that basic auth is used when username/password provided."""
-        client = RemoteJupyterClient(
-            base_url="http://localhost:8888", username="user", password="pass"
-        )
-        mock_response = Mock()
-        mock_response.status_code = 200
-
-        with patch("requests.request", return_value=mock_response) as mock_req:
-            client._make_request("GET", "/api/kernels")
-            # Check that auth tuple was passed
-            call_kwargs = mock_req.call_args[1]
-            assert call_kwargs["auth"] == ("user", "pass")
 
 
 class TestValidateConnection:

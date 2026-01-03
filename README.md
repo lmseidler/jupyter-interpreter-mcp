@@ -90,7 +90,7 @@ All configuration is done via environment variables:
 ### Required
 
 - `JUPYTER_BASE_URL`: URL of remote Jupyter server (default: `http://localhost:8888`)
-- `JUPYTER_TOKEN`: Authentication token (preferred method)
+- `JUPYTER_TOKEN`: Authentication token
 
 ### Optional
 
@@ -113,7 +113,7 @@ uv pip install -e ".[dev,test]"
 ## Security Considerations
 
 - **Sandboxing**: Code executes in isolated Docker container, not on host
-- **Authentication**: Token or username/password authentication required
+- **Authentication**: Token authentication required
 - **Network**: Use HTTPS for production (configure via `JUPYTER_BASE_URL`)
 - **ZMQ Security**: Connections use HMAC-SHA256 signature verification
 - **File Isolation**: All paths relative to container filesystem

@@ -41,33 +41,19 @@ class RemoteJupyterClient:
     def __init__(
         self,
         base_url: str,
-        auth_token: str | None = None,
-        username: str | None = None,
-        password: str | None = None,
+        auth_token: str,
         timeout: int = 30,
     ) -> None:
         """Initialize the remote Jupyter client.
 
         Args:
             base_url: URL of the Jupyter server (e.g., 'http://localhost:8889')
-            auth_token: Authentication token (preferred method)
-            username: Username for basic authentication
-            password: Password for basic authentication
+            auth_token: Authentication token
             timeout: HTTP request timeout in seconds
-
-        Raises:
-            ValueError: If neither token nor username/password are provided
         """
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
-        self.username = username
-        self.password = password
         self.timeout = timeout
-
-        if not auth_token and not (username and password):
-            raise ValueError(
-                "Either auth_token or both username and password must be provided"
-            )
 
     def _get_auth_headers(self) -> dict[str, str]:
         """Build authentication headers for requests.
@@ -104,10 +90,6 @@ class RemoteJupyterClient:
         if "headers" in kwargs:
             headers.update(kwargs["headers"])
         kwargs["headers"] = headers
-
-        # Add basic auth if using username/password
-        if self.username and self.password and not self.auth_token:
-            kwargs["auth"] = (self.username, self.password)
 
         # Set timeout if not provided
         if "timeout" not in kwargs:
