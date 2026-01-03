@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -6,17 +7,43 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from jupyter_interpreter_mcp.notebook import Notebook
+from jupyter_interpreter_mcp.remote import (
+    JupyterAuthError,
+    JupyterConnectionError,
+    RemoteJupyterClient,
+)
 
 parent_folder = Path(__file__).resolve().parent
 env_path = parent_folder / ".env"
 
 load_dotenv(dotenv_path=env_path)
-# NOTE: Notebook storage will eventually be handled by a JupyterHub
-# container (future work)
-notebooks_folder_name = os.getenv("NOTEBOOKS_FOLDER", "notebooks")
-notebooks_folder = parent_folder / notebooks_folder_name
 
-notebooks_folder.mkdir(exist_ok=True)
+# Load configuration from environment
+base_url = os.getenv("JUPYTER_BASE_URL", "http://localhost:8888")
+token = os.getenv("JUPYTER_TOKEN")
+notebooks_folder = os.getenv("NOTEBOOKS_FOLDER", "/home/jovyan/notebooks")
+
+# Initialize remote client
+try:
+    if not token:
+        raise ValueError("JUPYTER_TOKEN environment variable is required")
+    remote_client = RemoteJupyterClient(base_url=base_url, auth_token=token)
+    # Validate connection on startup
+    remote_client.validate_connection()
+except (JupyterConnectionError, JupyterAuthError) as e:
+    print(f"Failed to connect to Jupyter server at {base_url}: {e}", file=sys.stderr)
+    print(
+        "Please check your configuration and ensure Jupyter server is running.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+except ValueError as e:
+    print(f"Invalid configuration: {e}", file=sys.stderr)
+    print(
+        "Please provide JUPYTER_TOKEN.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 mcp = FastMCP(
     name="Code Interpreter",
@@ -39,49 +66,54 @@ sessions: dict[int, Notebook] = {}
         "maintain context."
     ),
 )
-async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
+async def execute_code(code: str, session_id: int = 0) -> dict:
     global sessions
     """Executes the provided Python code and returns the result.
 
-    Args:
-        code (str): The Python code to execute.
-        session_id (int, optional): A unique identifier used to associate
-            multiple code execution requests with the same logical session.
-            If this is the first request, you may omit it or set it to 0.
-            The system will generate and return a new session_id, which
-            should be reused in follow-up requests to maintain continuity
-            within the same session.
-
-    Returns:
-        dict[str, list[str]]: A dictionary with 'error' and 'result' keys,
-            each containing a list of strings.
+    :param code: The Python code to execute.
+    :type code: str
+    :param session_id: A unique identifier used to associate multiple code execution
+        requests with the same logical session. If this is the first request, you may
+        omit it or set it to 0. The system will generate and return a new session_id,
+        which should be reused in follow-up requests to maintain continuity within the
+        same session.
+    :type session_id: int, optional
+    :return: A dictionary with 'error' and 'result' keys (each containing a list of
+        strings), and 'session_id' key (containing the session ID as an integer).
+    :rtype: dict
     """
-    session_info: str | None = None
+    # Create new session if session_id is 0 or session doesn't exist in memory
+    if session_id == 0 or session_id not in sessions:
+        # Generate new session_id if needed
+        if session_id == 0:
+            session_id = int(time.time())
 
-    if session_id == 0 or not os.path.exists(
-        os.path.join(notebooks_folder, f"{session_id}.txt")
-    ):
-        session_id = int(time.time())
-        sessions[session_id] = Notebook(session_id)
-        session_info = (
-            f"Your session_id for this chat is {session_id}. "
-            f"You should provide it for subsequent requests."
-        )
-    elif not sessions.get(session_id):
-        notebook = Notebook(session_id)
-        notebook.load_from_file()
+        # Create new notebook session
+        notebook = Notebook(session_id, remote_client, notebooks_folder)
+        await notebook.connect()
         sessions[session_id] = notebook
+
+        # Try to load from file if it exists (for session restoration)
+        # If session_id was provided but not in memory, it might exist on disk
+        await notebook.load_from_file()
 
     try:
         notebook = sessions[session_id]
-        result: dict[str, list[str]] = notebook.execute_new_code(code)
-        if session_info:
-            result["result"].append(session_info)
+        result: dict[str, list[str]] = await notebook.execute_new_code(code)
+
+        # Add session_id to the response
+        response: dict = {
+            "error": result["error"],
+            "result": result["result"],
+            "session_id": session_id,
+        }
+
         if len(result["error"]) == 0:
-            notebook.dump_to_file()
-        return result
+            await notebook.dump_to_file()
+
+        return response
     except Exception as e:
-        return {"error": [str(e)], "result": []}
+        return {"error": [str(e)], "result": [], "session_id": session_id}
 
 
 def main() -> None:

@@ -1,132 +1,127 @@
 # Jupyter Interpreter MCP
 
-A Jupyter-based MCP (Model Context Protocol) server for code interpretation. This server provides a persistent code execution environment similar to Jupyter notebooks, allowing you to execute Python code and maintain session state across multiple requests.
+A remote Jupyter-based MCP (Model Context Protocol) server for code interpretation. This server connects to a remote Jupyter server (running in a Docker container or cloud instance) and provides a persistent, sandboxed code execution environment similar to Jupyter notebooks.
 
-## Features
+## Architecture
 
-- Persistent code execution sessions (similar to Jupyter notebooks)
-- Session management with unique session IDs
-- Execute Python code and retrieve results
-- Error handling and reporting
-- MCP server interface for easy integration
+```
+MCP Server → RemoteJupyterClient → Jupyter REST API → Remote Kernel
+                                          ↓
+                              WebSocket Connection
+                                          ↓
+                              Container Filesystem
+```
+
+All code executes within the remote Jupyter container, providing isolation and security. Session history files are stored in the container filesystem, not on the host.
 
 ## Requirements
 
 - Python 3.10 or higher
 - uv package manager
+- Docker (for running Jupyter container)
+- Network access to Jupyter server
 
-## Installation
+## Quick Start
 
-### Production Install
+### 1. Start Jupyter Container
 
-Install the package using `uv`:
-
-```bash
-uv pip install .
-```
-
-### Development Install
-
-For development, install in editable mode:
+Run a Jupyter container with the required port mappings, e.g.:
 
 ```bash
-uv pip install -e .
+docker run -d \
+  --name jupyter-notebook \
+  -p 8889:8888 \
+  jupyter/minimal-notebook:latest
 ```
 
-This allows you to modify the source code and see changes immediately without reinstalling.
+Port mappings:
+- `8889:8888` - HTTP API access (mapped to 8889 on host to avoid conflicts)
 
-## Usage
+### 2. Get Authentication Token
 
-### Using uvx (One-off Execution)
+Create a new token for accessing the JupyterLab or use an existing token.
 
-Run the MCP server without persistent installation:
+### 3. Configure Environment
+
+Create a `.env` file in the project root:
+
+```bash
+JUPYTER_BASE_URL=http://localhost:8889
+JUPYTER_TOKEN=abc123def456...
+NOTEBOOKS_FOLDER=/home/jovyan/notebooks
+```
+
+See `.env.example` for full configuration options and Docker setup instructions.
+
+### 4. Run the MCP server
+
+TODO: Start the server using uvx:
 
 ```bash
 uvx jupyter-interpreter-mcp
 ```
 
-### Using Installed Command
+or to add it to e.g. Claude Code:
 
-After installation, run the server using the command-line entry point:
-
-```bash
-jupyter-interpreter-mcp
+```json
+{
+  "mcpServers": {
+    "jupyter-interpreter-mcp": {
+      "command": "uvx",
+      "args": [
+        "jupyter-interpreter-mcp"
+      ]
+    }
+  }
+}
 ```
 
-### Using Python Module
-
-Run the server as a Python module:
+Currently you need to install it first:
 
 ```bash
-python -m jupyter_interpreter_mcp
+uv pip install .
 ```
 
-## Environment Variables
+and then run it:
 
-The server can be configured using environment variables. Create a `.env` file in the project root based on `.env.example`:
+```bash
+uv run jupyter-interpreter-mcp
+```
 
-- `NOTEBOOKS_FOLDER`: (Optional) Path to the folder where notebook session files are stored. Defaults to `notebooks` directory next to the source code.
+The server will validate the connection to Jupyter on startup and fail with a clear error message if the connection cannot be established.
 
-**Note**: Notebook storage will eventually be handled by a JupyterHub container in future versions.
+## Configuration
 
-## Development Setup
+All configuration is done via environment variables:
+
+### Required
+
+- `JUPYTER_BASE_URL`: URL of remote Jupyter server (default: `http://localhost:8888`)
+- `JUPYTER_TOKEN`: Authentication token
+
+### Optional
+
+- `NOTEBOOKS_FOLDER`: Path to notebooks folder in remote container (default: `/home/jovyan/notebooks`)
+
+## Tools
+
+TODO
+
+## Development
 
 ### Installing Development Dependencies
 
-To work on this project, you'll need to install the development dependencies:
-
 ```bash
-uv pip install -e ".[dev]"
+uv pip install -e ".[dev,test]"
 ```
 
-This installs the package in editable mode along with development tools including:
-- `pre-commit` - Git hooks for code quality
-- `black` - Code formatter
-- `ruff` - Fast Python linter
-- `mypy` - Static type checker
-- `pyupgrade` - Python syntax modernizer
+## Security Considerations
 
-### Setting Up Pre-commit Hooks
-
-Pre-commit hooks automatically check your code quality before each commit. To install them:
-
-```bash
-pre-commit install
-```
-
-Once installed, the hooks will run automatically on `git commit`. The hooks perform:
-- File hygiene checks (trailing whitespace, end-of-file fixes)
-- File validation (TOML, YAML syntax)
-- Large file detection (warns on files >10MB)
-- Debug statement detection
-- Code formatting with `black`
-- Linting with `ruff` (with auto-fix)
-- Python syntax upgrades with `pyupgrade` (Python 3.10+)
-- Type checking with `mypy`
-
-### Running Code Quality Checks Manually
-
-You can run all pre-commit hooks manually on all files:
-
-```bash
-pre-commit run --all-files
-```
-
-Or run individual tools:
-
-```bash
-# Format code with black
-black src/
-
-# Lint and auto-fix with ruff
-ruff check --fix src/
-
-# Upgrade Python syntax
-pyupgrade --py310-plus src/**/*.py
-
-# Type check with mypy
-mypy src/jupyter_interpreter_mcp
-```
+- **Sandboxing**: Code executes in isolated Docker container, not on host
+- **Authentication**: Token authentication required
+- **Network**: Use HTTPS for production (configure via `JUPYTER_BASE_URL`)
+- **WebSocket Security**: Connections use token-based authentication
+- **File Isolation**: All paths relative to container filesystem
 
 ## License
 
