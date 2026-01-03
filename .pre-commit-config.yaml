@@ -41,3 +41,6 @@ repos:
     hooks:
       - id: mypy
         args: [--explicit-package-bases, --check-untyped-defs]
+        additional_dependencies:
+          - types-requests>=2.31.0
+          - pytest>=7.0.0

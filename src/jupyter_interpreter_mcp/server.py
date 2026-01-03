@@ -1,22 +1,52 @@
 import os
+import sys
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from dotenv import load_dotenv  # type: ignore[import-not-found]
+from mcp.server.fastmcp import FastMCP  # type: ignore[import-not-found]
 
 from jupyter_interpreter_mcp.notebook import Notebook
+from jupyter_interpreter_mcp.remote import (
+    JupyterAuthError,
+    JupyterConnectionError,
+    RemoteJupyterClient,
+)
 
 parent_folder = Path(__file__).resolve().parent
 env_path = parent_folder / ".env"
 
 load_dotenv(dotenv_path=env_path)
-# NOTE: Notebook storage will eventually be handled by a JupyterHub
-# container (future work)
-notebooks_folder_name = os.getenv("NOTEBOOKS_FOLDER", "notebooks")
-notebooks_folder = parent_folder / notebooks_folder_name
 
-notebooks_folder.mkdir(exist_ok=True)
+# Load configuration from environment
+base_url = os.getenv("JUPYTER_BASE_URL", "http://localhost:8888")
+token = os.getenv("JUPYTER_TOKEN")
+username = os.getenv("JUPYTER_USERNAME")
+password = os.getenv("JUPYTER_PASSWORD")
+notebooks_folder = os.getenv("NOTEBOOKS_FOLDER", "/home/jovyan/notebooks")
+
+# Initialize remote client
+try:
+    remote_client = RemoteJupyterClient(
+        base_url=base_url, auth_token=token, username=username, password=password
+    )
+    # Validate connection on startup
+    remote_client.validate_connection()
+except (JupyterConnectionError, JupyterAuthError) as e:
+    print(f"Failed to connect to Jupyter server at {base_url}: {e}", file=sys.stderr)
+    print(
+        "Please check your configuration and ensure Jupyter server is running.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+except ValueError as e:
+    print(f"Invalid configuration: {e}", file=sys.stderr)
+    print(
+        "Please provide either JUPYTER_TOKEN or both JUPYTER_USERNAME "
+        "and JUPYTER_PASSWORD.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 mcp = FastMCP(
     name="Code Interpreter",
@@ -58,19 +88,23 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
     """
     session_info: str | None = None
 
-    if session_id == 0 or not os.path.exists(
-        os.path.join(notebooks_folder, f"{session_id}.txt")
-    ):
-        session_id = int(time.time())
-        sessions[session_id] = Notebook(session_id)
+    # Create new session if session_id is 0 or session doesn't exist in memory
+    if session_id == 0 or session_id not in sessions:
+        # Generate new session_id if needed
+        if session_id == 0:
+            session_id = int(time.time())
+
+        # Create new notebook session
+        sessions[session_id] = Notebook(session_id, remote_client, notebooks_folder)
+
+        # Try to load from file if it exists (for session restoration)
+        if session_id != int(time.time()):
+            sessions[session_id].load_from_file()
+
         session_info = (
             f"Your session_id for this chat is {session_id}. "
             f"You should provide it for subsequent requests."
         )
-    elif not sessions.get(session_id):
-        notebook = Notebook(session_id)
-        notebook.load_from_file()
-        sessions[session_id] = notebook
 
     try:
         notebook = sessions[session_id]
