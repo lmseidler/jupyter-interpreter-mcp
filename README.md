@@ -7,7 +7,7 @@ A remote Jupyter-based MCP (Model Context Protocol) server for code interpretati
 ```
 MCP Server → RemoteJupyterClient → Jupyter REST API → Remote Kernel
                                           ↓
-                              Direct ZMQ Connection
+                              WebSocket Connection
                                           ↓
                               Container Filesystem
 ```
@@ -31,16 +31,11 @@ Run a Jupyter container with the required port mappings, e.g.:
 docker run -d \
   --name jupyter-notebook \
   -p 8889:8888 \
-  -p 50000-50100:50000-50100 \
   jupyter/minimal-notebook:latest
 ```
 
 Port mappings:
 - `8889:8888` - HTTP API access (mapped to 8889 on host to avoid conflicts)
-- `50000-50100:50000-50100` - ZMQ ports for kernel communication (~20 concurrent kernels)
-
-Alternatively, you can use `--network=host` in your `docker run` command to eliminate the need for mapping the 50xxx ports.
-However, this will expose the Jupyter server to the host network, which may be a security risk.
 
 ### 2. Get Authentication Token
 
@@ -107,8 +102,6 @@ All configuration is done via environment variables:
 ### Optional
 
 - `NOTEBOOKS_FOLDER`: Path to notebooks folder in remote container (default: `/home/jovyan/notebooks`)
-- `ZMQ_PORT_RANGE_START`: Start of ZMQ port range (default: `50000`)
-- `ZMQ_PORT_RANGE_END`: End of ZMQ port range (default: `50100`)
 
 ## Tools
 
@@ -127,7 +120,7 @@ uv pip install -e ".[dev,test]"
 - **Sandboxing**: Code executes in isolated Docker container, not on host
 - **Authentication**: Token authentication required
 - **Network**: Use HTTPS for production (configure via `JUPYTER_BASE_URL`)
-- **ZMQ Security**: Connections use HMAC-SHA256 signature verification
+- **WebSocket Security**: Connections use token-based authentication
 - **File Isolation**: All paths relative to container filesystem
 
 ## License

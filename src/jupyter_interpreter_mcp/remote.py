@@ -256,9 +256,6 @@ class RemoteJupyterClient:
     ) -> dict[str, list[str]]:
         """Execute code via WebSocket and return structured results.
 
-        This method replaces the ZMQ-based execution with WebSocket transport,
-        making it work in containerized environments where ZMQ ports are not mapped.
-
         :param kernel_id: ID of the kernel to execute code in
         :type kernel_id: str
         :param code: Python code to execute
@@ -353,87 +350,3 @@ class RemoteJupyterClient:
             raise JupyterExecutionError(f"Failed to execute code: {e}") from e
 
         return {"error": error, "result": result}
-
-    async def get_kernel_connection_info(self, kernel_id: str) -> dict[str, Any]:
-        """Retrieve kernel ZMQ connection information asynchronously.
-
-        DEPRECATED: This method is no longer needed as execution now uses
-        WebSocket instead of ZMQ. It may be removed in a future version.
-
-        Tries to read connection file from the remote kernel's filesystem.
-
-        :param kernel_id: ID of the kernel
-        :type kernel_id: str
-        :return: Dictionary with connection info compatible with BlockingKernelClient:
-            {
-                'shell_port': int,
-                'iopub_port': int,
-                'stdin_port': int,
-                'control_port': int,
-                'hb_port': int,
-                'ip': str,
-                'key': str,
-                'transport': str,
-                'signature_scheme': str
-            }
-        :rtype: dict[str, Any]
-        :raises JupyterConnectionError: If cannot retrieve connection info
-        """
-        # Try multiple possible locations for the connection file
-        possible_paths = [
-            f"~/.local/share/jupyter/runtime/kernel-{kernel_id}.json",
-            f"/run/user/1000/jupyter/kernel-{kernel_id}.json",
-            f"/tmp/kernel-{kernel_id}.json",
-        ]
-
-        code = f"""
-import json
-import os
-
-paths = {possible_paths}
-for path in paths:
-    expanded_path = os.path.expanduser(path)
-    if os.path.exists(expanded_path):
-        with open(expanded_path, 'r') as f:
-            conn_info = json.load(f)
-        print(json.dumps(conn_info))
-        break
-else:
-    print("ERROR: Connection file not found in any of the expected locations")
-"""
-
-        try:
-            # Execute code asynchronously
-            output = await self.execute_code_for_output(kernel_id, code)
-
-            # Parse the JSON output
-            conn_info = json.loads(output.strip())
-
-            # Validate required fields
-            required_fields = [
-                "shell_port",
-                "iopub_port",
-                "stdin_port",
-                "control_port",
-                "hb_port",
-                "ip",
-                "key",
-                "transport",
-                "signature_scheme",
-            ]
-
-            for field in required_fields:
-                if field not in conn_info:
-                    raise JupyterConnectionError(
-                        f"Connection info missing required field: {field}"
-                    )
-
-            # Cast to the proper return type
-            return dict(conn_info)
-
-        except json.JSONDecodeError as e:
-            raise JupyterConnectionError(f"Failed to parse connection info: {e}") from e
-        except JupyterExecutionError as e:
-            raise JupyterConnectionError(
-                f"Failed to retrieve connection info: {e}"
-            ) from e
