@@ -1,9 +1,4 @@
 import os
-from typing import Any
-
-from jupyter_client.blocking.client import (  # type: ignore[import-not-found]
-    BlockingKernelClient,
-)
 
 from jupyter_interpreter_mcp.remote import RemoteJupyterClient
 
@@ -15,85 +10,76 @@ class Notebook:
     allowing for persistent code execution sessions with history tracking
     and session persistence to the remote filesystem.
 
-    Attributes:
-        remote_client: Client for interacting with remote Jupyter server.
-        session_id: Unique identifier for this notebook session.
-        kernel_id: ID of the remote kernel.
-        client: The blocking kernel client for executing code via ZMQ.
-        file_path: Path to the session history file (on remote filesystem).
-        history: List of successfully executed code blocks.
+    :ivar remote_client: Client for interacting with remote Jupyter server.
+    :ivar session_id: Unique identifier for this notebook session.
+    :ivar kernel_id: ID of the remote kernel.
+    :ivar file_path: Path to the session history file (on remote filesystem).
+    :ivar history: List of successfully executed code blocks.
     """
 
     def __init__(
         self, session_id: int, remote_client: RemoteJupyterClient, notebooks_folder: str
     ) -> None:
-        """Initializes a new Notebook session with a remote Jupyter kernel.
+        """Initializes a new Notebook session.
 
-        Args:
-            session_id: A unique identifier for this notebook session.
-            remote_client: Client for interacting with remote Jupyter server.
-            notebooks_folder: Path to notebooks folder on remote filesystem.
+        :param session_id: A unique identifier for this notebook session.
+        :type session_id: int
+        :param remote_client: Client for interacting with remote Jupyter server.
+        :type remote_client: RemoteJupyterClient
+        :param notebooks_folder: Path to notebooks folder on remote filesystem.
+        :type notebooks_folder: str
         """
         self.remote_client = remote_client
         self.session_id: int = session_id
+        self.notebooks_folder = notebooks_folder
 
-        # Create kernel on remote server
-        self.kernel_id: str = remote_client.create_kernel()
-
-        # Get remote kernel connection info
-        conn_info = remote_client.get_kernel_connection_info(self.kernel_id)
-
-        # Connect to remote kernel via ZMQ
-        self.client: BlockingKernelClient = BlockingKernelClient()
-        self.client.load_connection_info(conn_info)
-        self.client.start_channels()
-        self.client.wait_for_ready(timeout=10)
-
+        self.kernel_id: str | None = None
         self.file_path: str = os.path.join(notebooks_folder, f"{self.session_id}.txt")
-
         self.history: list[str] = []
 
-    def execute_new_code(self, code: str) -> dict[str, list[str]]:
+    async def connect(self) -> None:
+        """Connects to a remote Jupyter kernel asynchronously.
+
+        Creates a new kernel on the remote server.
+        """
+        # Create kernel on remote server
+        self.kernel_id = self.remote_client.create_kernel()
+
+    async def execute_new_code(self, code: str) -> dict[str, list[str]]:
         """Executes Python code in the kernel and returns results.
 
-        Args:
-            code: The Python code string to execute.
-
-        Returns:
-            dict[str, list[str]]: A dictionary with 'error' and 'result' keys.
-                'error' contains error messages (empty if successful).
-                'result' contains output and execution results.
+        :param code: The Python code string to execute.
+        :type code: str
+        :return: A dictionary with 'error' and 'result' keys. 'error' contains
+            error messages (empty if successful). 'result' contains output and
+            execution results.
+        :rtype: dict[str, list[str]]
+        :raises RuntimeError: If the notebook is not connected.
         """
-        result: list[str] = []
-        error: list[str] = []
+        if self.kernel_id is None:
+            raise RuntimeError("Notebook is not connected. Call connect() first.")
 
-        def output_callback(msg: dict[str, Any]) -> None:
-            if msg["msg_type"] == "stream":
-                result.append(msg["content"]["text"])
-            elif msg["msg_type"] == "execute_result":
-                result.append(
-                    f"Execution Result: {msg['content']['data']['text/plain']}"
-                )
-            elif msg["msg_type"] == "error":
-                error.append(
-                    f"Error: {msg['content']['ename']}: {msg['content']['evalue']}"
-                )
+        # Execute code via WebSocket using the remote client
+        result = await self.remote_client.execute(self.kernel_id, code)
 
-        self.client.execute_interactive(
-            code=code,
-            output_hook=output_callback,
-            stop_on_error=True,  # Optional: stop if an error occurs
-        )
-        if len(error) == 0:
+        # Update history only if no errors
+        if len(result["error"]) == 0:
             self.history.append("\n" + code)
-        return {"error": error, "result": result}
 
-    def dump_to_file(self) -> None:
+        return result
+
+    async def dump_to_file(self) -> None:
         """Saves the execution history to a file on the remote filesystem.
 
         Executes Python code in the kernel to write the history to the
         remote container filesystem.
+
+        Raises:
+            RuntimeError: If the notebook is not connected.
         """
+        if self.kernel_id is None:
+            raise RuntimeError("Notebook is not connected. Call connect() first.")
+
         # Generate code to write history to remote file
         code = f"""
 import os
@@ -102,19 +88,23 @@ with open({repr(self.file_path)}, 'w') as f:
     for line in {repr(self.history)}:
         f.write(line + '\\n')
 """
-        # Execute silently in the kernel
-        self.client.execute(code, silent=True)
+        # Execute in the kernel (we can ignore the output)
+        await self.remote_client.execute(self.kernel_id, code)
 
-    def load_from_file(self) -> bool:
+    async def load_from_file(self) -> bool:
         """Loads and re-executes code from the session history file.
 
         Attempts to read the session file from the remote container and execute
         its contents to restore the kernel state.
 
-        Returns:
-            bool: True if the file was successfully loaded and executed,
-                False if an error occurred.
+        :return: True if the file was successfully loaded and executed,
+            False if an error occurred.
+        :rtype: bool
+        :raises RuntimeError: If the notebook is not connected.
         """
+        if self.kernel_id is None:
+            raise RuntimeError("Notebook is not connected. Call connect() first.")
+
         # Generate code to read history from remote file
         code = f"""
 import os
@@ -128,7 +118,7 @@ else:
     print('FILE_NOT_FOUND')
 """
         try:
-            result = self.execute_new_code(code)
+            result = await self.execute_new_code(code)
             if result["error"]:
                 return False
 
@@ -148,7 +138,7 @@ else:
 
                 # Execute the file content to restore state
                 if file_content:
-                    restore_result = self.execute_new_code(file_content)
+                    restore_result = await self.execute_new_code(file_content)
                     return len(restore_result["error"]) == 0
 
             return False
@@ -158,4 +148,5 @@ else:
     # TODO abstract out creating a new client
     def close(self) -> None:
         """Shuts down the remote Jupyter kernel cleanly."""
-        self.remote_client.shutdown_kernel(self.kernel_id)
+        if self.kernel_id:
+            self.remote_client.shutdown_kernel(self.kernel_id)

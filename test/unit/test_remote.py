@@ -353,10 +353,213 @@ class TestExecuteCodeForOutput:
             await client.execute_code_for_output("kernel-123", "print(x)")
 
 
+class TestExecute:
+    """Test WebSocket code execution."""
+
+    @pytest.mark.asyncio
+    @patch("websockets.connect")
+    async def test_execute_success(self, mock_connect):
+        """Test successful code execution via WebSocket."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="test-token"
+        )
+
+        # Mock WebSocket connection with AsyncMock
+        mock_ws = AsyncMock()
+        mock_connect.return_value.__aenter__.return_value = mock_ws
+
+        # Capture the msg_id from the sent message
+        sent_messages = []
+
+        async def capture_send(data):
+            sent_messages.append(json.loads(data))
+
+        mock_ws.send = AsyncMock(side_effect=capture_send)
+
+        # Mock WebSocket messages with proper parent_header
+        call_count = [0]
+
+        async def mock_recv_side_effect():
+            if call_count[0] == 0:
+                # Wait for send to be called first
+                await asyncio.sleep(0.01)
+                msg_id = sent_messages[0]["header"]["msg_id"]
+                call_count[0] += 1
+                return json.dumps(
+                    {
+                        "msg_type": "stream",
+                        "parent_header": {"msg_id": msg_id},
+                        "content": {"name": "stdout", "text": "Hello, World!\n"},
+                    }
+                )
+            else:
+                msg_id = sent_messages[0]["header"]["msg_id"]
+                return json.dumps(
+                    {
+                        "msg_type": "status",
+                        "parent_header": {"msg_id": msg_id},
+                        "content": {"execution_state": "idle"},
+                    }
+                )
+
+        mock_ws.recv = AsyncMock(side_effect=mock_recv_side_effect)
+
+        result = await client.execute("kernel-123", "print('Hello, World!')")
+
+        assert result["error"] == []
+        assert "Hello, World!" in result["result"][0]
+
+    @pytest.mark.asyncio
+    @patch("websockets.connect")
+    async def test_execute_with_result(self, mock_connect):
+        """Test code execution with execute_result."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="test-token"
+        )
+
+        # Mock WebSocket connection
+        mock_ws = AsyncMock()
+        mock_connect.return_value.__aenter__.return_value = mock_ws
+
+        sent_messages = []
+
+        async def capture_send(data):
+            sent_messages.append(json.loads(data))
+
+        mock_ws.send = AsyncMock(side_effect=capture_send)
+
+        call_count = [0]
+
+        async def mock_recv_side_effect():
+            await asyncio.sleep(0.01)
+            msg_id = sent_messages[0]["header"]["msg_id"]
+
+            if call_count[0] == 0:
+                call_count[0] += 1
+                return json.dumps(
+                    {
+                        "msg_type": "execute_result",
+                        "parent_header": {"msg_id": msg_id},
+                        "content": {"data": {"text/plain": "42"}},
+                    }
+                )
+            else:
+                return json.dumps(
+                    {
+                        "msg_type": "status",
+                        "parent_header": {"msg_id": msg_id},
+                        "content": {"execution_state": "idle"},
+                    }
+                )
+
+        mock_ws.recv = AsyncMock(side_effect=mock_recv_side_effect)
+
+        result = await client.execute("kernel-123", "21 + 21")
+
+        assert result["error"] == []
+        assert "Execution Result: 42" in result["result"][0]
+
+    @pytest.mark.asyncio
+    @patch("websockets.connect")
+    async def test_execute_error(self, mock_connect):
+        """Test code execution error via WebSocket."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="test-token"
+        )
+
+        # Mock WebSocket connection
+        mock_ws = AsyncMock()
+        mock_connect.return_value.__aenter__.return_value = mock_ws
+
+        sent_messages = []
+
+        async def capture_send(data):
+            sent_messages.append(json.loads(data))
+
+        mock_ws.send = AsyncMock(side_effect=capture_send)
+
+        call_count = [0]
+
+        async def mock_recv_side_effect():
+            await asyncio.sleep(0.01)
+            msg_id = sent_messages[0]["header"]["msg_id"]
+
+            if call_count[0] == 0:
+                call_count[0] += 1
+                return json.dumps(
+                    {
+                        "msg_type": "error",
+                        "parent_header": {"msg_id": msg_id},
+                        "content": {
+                            "ename": "NameError",
+                            "evalue": "name 'x' is not defined",
+                            "traceback": [
+                                "Traceback...",
+                                "NameError: name 'x' is not defined",
+                            ],
+                        },
+                    }
+                )
+            else:
+                return json.dumps(
+                    {
+                        "msg_type": "status",
+                        "parent_header": {"msg_id": msg_id},
+                        "content": {"execution_state": "idle"},
+                    }
+                )
+
+        mock_ws.recv = AsyncMock(side_effect=mock_recv_side_effect)
+
+        result = await client.execute("kernel-123", "print(x)")
+
+        assert "Error: NameError: name 'x' is not defined" in result["error"][0]
+        assert result["result"] == []
+
+    @pytest.mark.asyncio
+    @patch("websockets.connect")
+    async def test_execute_timeout(self, mock_connect):
+        """Test code execution timeout."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="test-token"
+        )
+
+        # Mock WebSocket connection
+        mock_ws = AsyncMock()
+        mock_connect.return_value.__aenter__.return_value = mock_ws
+
+        sent_messages = []
+
+        async def capture_send(data):
+            sent_messages.append(json.loads(data))
+
+        mock_ws.send = AsyncMock(side_effect=capture_send)
+
+        # Mock recv to simulate a timeout by sleeping longer than the timeout
+        async def mock_recv_timeout():
+            # Sleep longer than the timeout to trigger asyncio.TimeoutError
+            await asyncio.sleep(10)
+            return json.dumps(
+                {
+                    "msg_type": "status",
+                    "parent_header": {},
+                    "content": {"execution_state": "busy"},
+                }
+            )
+
+        mock_ws.recv = AsyncMock(side_effect=mock_recv_timeout)
+
+        with pytest.raises(JupyterExecutionError, match="timed out"):
+            await client.execute(
+                "kernel-123", "import time; time.sleep(100)", timeout=0.1
+            )
+
+
 class TestGetKernelConnectionInfo:
     """Test kernel connection info retrieval."""
 
-    def test_get_kernel_connection_info_success(self):
+    @pytest.mark.asyncio
+    async def test_get_kernel_connection_info_success(self):
         """Test successful connection info retrieval."""
         client = RemoteJupyterClient(
             base_url="http://localhost:8888", auth_token="token"
@@ -381,12 +584,13 @@ class TestGetKernelConnectionInfo:
         with patch.object(
             client, "execute_code_for_output", return_value=conn_file_content
         ):
-            conn_info = client.get_kernel_connection_info("kernel-123")
+            conn_info = await client.get_kernel_connection_info("kernel-123")
             assert conn_info["shell_port"] == 50001
             assert conn_info["iopub_port"] == 50002
             assert conn_info["ip"] == "127.0.0.1"
 
-    def test_get_kernel_connection_info_file_not_found(self):
+    @pytest.mark.asyncio
+    async def test_get_kernel_connection_info_file_not_found(self):
         """Test connection info retrieval when file not found."""
         client = RemoteJupyterClient(
             base_url="http://localhost:8888", auth_token="token"
@@ -402,4 +606,4 @@ class TestGetKernelConnectionInfo:
             with pytest.raises(
                 JupyterConnectionError, match="Failed to retrieve connection info"
             ):
-                client.get_kernel_connection_info("kernel-123")
+                await client.get_kernel_connection_info("kernel-123")

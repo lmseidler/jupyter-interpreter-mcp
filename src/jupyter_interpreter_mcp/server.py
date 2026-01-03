@@ -3,8 +3,8 @@ import sys
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv  # type: ignore [import-not-found]
-from mcp.server.fastmcp import FastMCP  # type: ignore [import-not-found]
+from dotenv import load_dotenv
+from mcp.server.fastmcp import FastMCP
 
 from jupyter_interpreter_mcp.notebook import Notebook
 from jupyter_interpreter_mcp.remote import (
@@ -70,18 +70,17 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
     global sessions
     """Executes the provided Python code and returns the result.
 
-    Args:
-        code (str): The Python code to execute.
-        session_id (int, optional): A unique identifier used to associate
-            multiple code execution requests with the same logical session.
-            If this is the first request, you may omit it or set it to 0.
-            The system will generate and return a new session_id, which
-            should be reused in follow-up requests to maintain continuity
-            within the same session.
-
-    Returns:
-        dict[str, list[str]]: A dictionary with 'error' and 'result' keys,
-            each containing a list of strings.
+    :param code: The Python code to execute.
+    :type code: str
+    :param session_id: A unique identifier used to associate multiple code execution
+        requests with the same logical session. If this is the first request, you may
+        omit it or set it to 0. The system will generate and return a new session_id,
+        which should be reused in follow-up requests to maintain continuity within the
+        same session.
+    :type session_id: int, optional
+    :return: A dictionary with 'error' and 'result' keys, each containing a
+        list of strings.
+    :rtype: dict[str, list[str]]
     """
     session_info: str | None = None
 
@@ -92,11 +91,13 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
             session_id = int(time.time())
 
         # Create new notebook session
-        sessions[session_id] = Notebook(session_id, remote_client, notebooks_folder)
+        notebook = Notebook(session_id, remote_client, notebooks_folder)
+        await notebook.connect()
+        sessions[session_id] = notebook
 
         # Try to load from file if it exists (for session restoration)
-        if session_id != int(time.time()):
-            sessions[session_id].load_from_file()
+        # If session_id was provided but not in memory, it might exist on disk
+        await notebook.load_from_file()
 
         session_info = (
             f"Your session_id for this chat is {session_id}. "
@@ -105,11 +106,11 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str]]:
 
     try:
         notebook = sessions[session_id]
-        result: dict[str, list[str]] = notebook.execute_new_code(code)
+        result: dict[str, list[str]] = await notebook.execute_new_code(code)
         if session_info:
             result["result"].append(session_info)
         if len(result["error"]) == 0:
-            notebook.dump_to_file()
+            await notebook.dump_to_file()
         return result
     except Exception as e:
         return {"error": [str(e)], "result": []}
