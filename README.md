@@ -60,7 +60,7 @@ See `.env.example` for full configuration options and Docker setup instructions.
 
 ### 4. Run the MCP server
 
-Start the server using uvx:
+TODO: Start the server using uvx:
 
 ```bash
 uvx jupyter-interpreter-mcp
@@ -79,6 +79,18 @@ or to add it to e.g. Claude Code:
     }
   }
 }
+```
+
+Currently you need to install it first:
+
+```bash
+uv pip install .
+```
+
+and then run it:
+
+```bash
+uv run jupyter-interpreter-mcp
 ```
 
 The server will validate the connection to Jupyter on startup and fail with a clear error message if the connection cannot be established.
