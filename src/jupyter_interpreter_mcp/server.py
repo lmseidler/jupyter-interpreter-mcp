@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -47,14 +48,14 @@ except ValueError as e:
 
 mcp = FastMCP(
     name="Code Interpreter",
-    instructions="""
-    You can execute code by sending a request with the code you want to run.
-    Think of this tool as a jupyter notebook. It will remember your previously
-    executed code, if you pass in your session_id.
-    It is crucial to remember your session_id for a smooth interaction.
+    instructions="""You can execute code by sending a request with the code you want
+to run. Think of this tool as a jupyter notebook. It will remember your previously
+executed code, if you pass in your session_id. It is crucial to remember your
+session_id for a smooth interaction.
 
-    Supports both Python code and bash commands (e.g., 'ls', 'pwd', 'cat file.txt').
-    Bash commands are executed directly without needing shell wrappers like !ls.
+Supports both Python code and bash commands (e.g., 'ls', 'pwd', 'cat file.txt').
+Bash commands are executed directly without needing shell wrappers like !ls.
+You can also use shell commands to install packages
     """,
 )
 sessions: dict[int, Notebook] = {}
@@ -67,10 +68,10 @@ sessions: dict[int, Notebook] = {}
         "past results (e.g., variables, imports). Similar to a Jupyter notebook. "
         "A session_id is returned on first use and must be included in subsequent "
         "requests to maintain context. Bash commands (e.g., 'ls', 'pwd') work "
-        "directly without wrappers."
+        "directly without wrappers and can be used to install packages."
     ),
 )
-async def execute_code(code: str, session_id: int = 0) -> dict:
+async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str] | int]:
     global sessions
     """Executes the provided code and returns the result.
 
@@ -106,7 +107,7 @@ async def execute_code(code: str, session_id: int = 0) -> dict:
         result: dict[str, list[str]] = await notebook.execute_new_code(code)
 
         # Add session_id to the response
-        response: dict = {
+        response: dict[str, list[str] | int] = {
             "error": result["error"],
             "result": result["result"],
             "session_id": session_id,
@@ -116,8 +117,14 @@ async def execute_code(code: str, session_id: int = 0) -> dict:
             await notebook.dump_to_file()
 
         return response
-    except Exception as e:
-        return {"error": [str(e)], "result": [], "session_id": session_id}
+    except Exception:
+        return {
+            "error": [
+                traceback.format_exc()
+            ],  # TODO: need to see if this is too verbose
+            "result": [],
+            "session_id": session_id,
+        }
 
 
 def main() -> None:
