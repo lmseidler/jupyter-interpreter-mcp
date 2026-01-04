@@ -17,16 +17,10 @@ jobs:
   build:
     name: Build & Verify Package
     runs-on: ubuntu-latest
-    # compute a TAG_NAME that works for push-tag runs and release runs
-    env:
-      TAG_NAME: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref_name || (github.event_name == 'release' && github.event.release.tag_name) || '' }}
     steps:
       - uses: actions/checkout@v4
-        # if this workflow is triggered by a release event, checkout the released tag so setuptools_scm
-        # can generate the correct version. For tag pushes, github.ref already points to the tag ref.
         with:
           fetch-depth: 0
-          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.ref }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -47,8 +41,7 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          # use the computed TAG_NAME so release jobs can find the artifact regardless of event type.
-          name: Dist_${{ env.TAG_NAME }}
+          name: Dist_${{ github.ref_name }}
           path: dist
   # Upload to Test PyPI on every tag push
   release-test-pypi:
@@ -80,27 +73,13 @@ jobs:
         id: setup-python
         with:
           python-version: '3.12'
-      - name: Set TAG_NAME and VERSION (strip leading "v" if present)
-        shell: bash
-        run: |
-          # The release event provides github.event.release.tag_name
-          TAG_NAME='${{ github.event.release.tag_name }}'
-          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
-          if [[ "$TAG_NAME" == v* ]]; then
-            # strip leading "v" to match versions produced by setuptools_scm or similar SCM-based versioning
-            echo "VERSION=${TAG_NAME:1}" >> $GITHUB_ENV
-          else
-            echo "VERSION=$TAG_NAME" >> $GITHUB_ENV
-          fi
       - name: Install test-package (verify the version on Test PyPI)
         run: |
-          # Use VERSION (without leading "v") when installing — SCM-generated versions typically do not include the "v"
-          pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ jupyter-interpreter-mcp==${{ env.VERSION }}
+          pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ jupyter-interpreter-mcp==${{ github.ref_name }}
       - name: Download packages built
         uses: actions/download-artifact@v4
         with:
-          # Use the TAG_NAME that was uploaded by the build job (contains the original tag, e.g. "v1.2.3")
-          name: Dist_${{ env.TAG_NAME }}
+          name: Dist_${{ github.ref_name }}
           path: dist
       - name: Upload package to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
