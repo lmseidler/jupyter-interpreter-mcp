@@ -91,7 +91,33 @@ The server will validate the connection to Jupyter on startup and fail with a cl
 
 ## Tools
 
-TODO
+### execute_code
+
+Executes code (Python or bash) within a persistent session, retaining past results (e.g., variables, imports). Similar to a Jupyter notebook.
+
+**Parameters:**
+- `code` (string, required): The code to execute (Python or bash commands)
+- `session_id` (integer, optional): A unique identifier used to associate multiple code execution requests with the same logical session. If this is the first request, you may omit it or set it to 0. The system will generate and return a new session_id, which should be reused in follow-up requests to maintain continuity within the same session.
+
+**Returns:**
+A dictionary containing:
+- `result` (list of strings): Output from the code execution
+- `error` (list of strings): Any errors that occurred during execution
+- `session_id` (integer): The session ID to use for subsequent requests
+
+**Example usage:**
+```python
+# First execution - creates a new session
+result = execute_code(code="x = 42\nprint(x)")
+# Returns: {"result": ["42"], "error": [], "session_id": 1704380400}
+
+# Subsequent execution - reuses the session
+result = execute_code(code="print(x * 2)", session_id=1704380400)
+# Returns: {"result": ["84"], "error": [], "session_id": 1704380400}
+
+# Bash commands
+result = execute_code(code="ls -la", session_id=1704380400)
+```
 
 ## Development
 
