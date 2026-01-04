@@ -14,37 +14,9 @@ from jupyter_interpreter_mcp.remote import (
     RemoteJupyterClient,
 )
 
-parent_folder = Path(__file__).resolve().parent
-env_path = parent_folder / ".env"
-
-load_dotenv(dotenv_path=env_path)
-
-# Load configuration from environment
-base_url = os.getenv("JUPYTER_BASE_URL", "http://localhost:8888")
-token = os.getenv("JUPYTER_TOKEN")
-notebooks_folder = os.getenv("NOTEBOOKS_FOLDER", "/home/jovyan/notebooks")
-
-# Initialize remote client
-try:
-    if not token:
-        raise ValueError("JUPYTER_TOKEN environment variable is required")
-    remote_client = RemoteJupyterClient(base_url=base_url, auth_token=token)
-    # Validate connection on startup
-    remote_client.validate_connection()
-except (JupyterConnectionError, JupyterAuthError) as e:
-    print(f"Failed to connect to Jupyter server at {base_url}: {e}", file=sys.stderr)
-    print(
-        "Please check your configuration and ensure Jupyter server is running.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-except ValueError as e:
-    print(f"Invalid configuration: {e}", file=sys.stderr)
-    print(
-        "Please provide JUPYTER_TOKEN.",
-        file=sys.stderr,
-    )
-    sys.exit(1)
+# Global variables initialized in main()
+remote_client: RemoteJupyterClient
+notebooks_folder: str
 
 mcp = FastMCP(
     name="Code Interpreter",
@@ -129,14 +101,75 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str] | 
 
 def main() -> None:
     """Entry point for the MCP server."""
-    import sys
+    import argparse
+    from importlib.metadata import version
 
-    # Handle --version flag
-    if len(sys.argv) > 1 and sys.argv[1] in ("--version", "-v"):
-        from importlib.metadata import version
+    # Load .env file first to ensure environment variables are available
+    parent_folder = Path(__file__).resolve().parent
+    env_path = parent_folder / ".env"
+    load_dotenv(dotenv_path=env_path)
 
-        print(f"jupyter-interpreter-mcp {version('jupyter-interpreter-mcp')}")
-        sys.exit(0)
+    # Set up argument parser
+    # Default values come from environment variables (already loaded from .env)
+    parser = argparse.ArgumentParser(
+        prog="jupyter-interpreter-mcp",
+        description="MCP server for executing code in remote Jupyter notebooks",
+    )
+    parser.add_argument(
+        "--jupyter-base-url",
+        default=os.getenv("JUPYTER_BASE_URL", "http://localhost:8888"),
+        help="Base URL of the Jupyter server (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--jupyter-token",
+        default=os.getenv("JUPYTER_TOKEN"),
+        help="Authentication token for Jupyter server",
+    )
+    parser.add_argument(
+        "--notebooks-folder",
+        default=os.getenv("NOTEBOOKS_FOLDER", "/home/jovyan/notebooks"),
+        help="Path for session notebook storage (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--version",
+        "-v",
+        action="version",
+        version=f"jupyter-interpreter-mcp {version('jupyter-interpreter-mcp')}",
+    )
+
+    # Parse arguments (CLI args will override the defaults)
+    args = parser.parse_args()
+
+    # Build configuration with precedence: CLI args > env vars > defaults
+    # argparse already handles this via default= parameter
+    base_url = args.jupyter_base_url
+    token = args.jupyter_token
+    notebooks_folder_path = args.notebooks_folder
+
+    # Initialize remote client
+    global remote_client, notebooks_folder
+    try:
+        if not token:
+            raise ValueError(
+                "JUPYTER_TOKEN is required "
+                "(provide via --jupyter-token or environment variable)"
+            )
+        remote_client = RemoteJupyterClient(base_url=base_url, auth_token=token)
+        notebooks_folder = notebooks_folder_path
+        # Validate connection on startup
+        remote_client.validate_connection()
+    except (JupyterConnectionError, JupyterAuthError) as e:
+        print(
+            f"Failed to connect to Jupyter server at {base_url}: {e}", file=sys.stderr
+        )
+        print(
+            "Please check your configuration and ensure Jupyter server is running.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except ValueError as e:
+        print(f"Invalid configuration: {e}", file=sys.stderr)
+        sys.exit(1)
 
     mcp.run()
 
