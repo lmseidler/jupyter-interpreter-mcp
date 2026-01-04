@@ -101,6 +101,16 @@ TODO
 uv pip install -e ".[dev,test]"
 ```
 
+### Testing
+
+Tests can be run using pytest.
+If you're using [mcpo](https://github.com/open-webui/mcpo) you can start the server using e.g. the following command:
+```bash
+uvx mcpo --port 8000 -- uv run --directory /path/to/jupyter-interpreter-mcp jupyter-interpreter-mcp
+```
+For this, a configured `.env` file is required.
+You can then test the MCP server endpoint at [http://localhost:8000/docs](http://localhost:8000/docs).
+
 ## License
 
 MIT
