@@ -46,9 +46,11 @@ class Notebook:
         self.kernel_id = self.remote_client.create_kernel()
 
     async def execute_new_code(self, code: str) -> dict[str, list[str]]:
-        """Executes Python code in the kernel and returns results.
+        """Executes code in the kernel and returns results.
 
-        :param code: The Python code string to execute.
+        Supports both Python code and bash commands.
+
+        :param code: The code to execute (Python or bash).
         :type code: str
         :return: A dictionary with 'error' and 'result' keys. 'error' contains
             error messages (empty if successful). 'result' contains output and

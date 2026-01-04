@@ -165,9 +165,11 @@ class RemoteJupyterClient:
         Legacy method that returns only stdout. For structured results
         (including errors and execution results), use execute() instead.
 
+        Supports both Python code and bash commands.
+
         :param kernel_id: ID of the kernel to execute code in
         :type kernel_id: str
-        :param code: Python code to execute
+        :param code: Code to execute (Python or bash)
         :type code: str
         :return: stdout from execution
         :rtype: str
@@ -256,9 +258,11 @@ class RemoteJupyterClient:
     ) -> dict[str, list[str]]:
         """Execute code via WebSocket and return structured results.
 
+        Supports both Python code and bash commands.
+
         :param kernel_id: ID of the kernel to execute code in
         :type kernel_id: str
-        :param code: Python code to execute
+        :param code: Code to execute (Python or bash)
         :type code: str
         :param timeout: Maximum time to wait for execution completion in seconds
         :type timeout: float

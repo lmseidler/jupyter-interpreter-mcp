@@ -1,6 +1,6 @@
 # Jupyter Interpreter MCP
 
-A remote Jupyter-based MCP (Model Context Protocol) server for code interpretation. This server connects to a remote Jupyter server (running in a Docker container or cloud instance) and provides a persistent, sandboxed code execution environment similar to Jupyter notebooks.
+A remote Jupyter-based MCP (Model Context Protocol) server for code interpretation. This server connects to a remote Jupyter server (running in a Docker container or cloud instance) and provides a persistent, sandboxed code execution environment similar to Jupyter notebooks. Supports both Python and bash command execution.
 
 ## Architecture
 
@@ -12,7 +12,7 @@ MCP Server → RemoteJupyterClient → Jupyter REST API → Remote Kernel
                               Container Filesystem
 ```
 
-All code executes within the remote Jupyter container, providing isolation and security. Session history files are stored in the container filesystem, not on the host.
+All code executes within the remote Jupyter container, providing isolation and security. Session history files are stored in the container filesystem, not on the host. You can execute both Python code and bash commands (e.g., `ls`, `pwd`, `cat file.txt`).
 
 ## Requirements
 
