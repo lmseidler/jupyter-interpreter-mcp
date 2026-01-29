@@ -1,147 +1,41 @@
 """Integration tests for list_dir tool."""
 
-from unittest.mock import Mock, patch
+import os
 
 import pytest
 
+from jupyter_interpreter_mcp import server
+from jupyter_interpreter_mcp.remote import RemoteJupyterClient
 
-class TestListDirIntegration:
-    """Integration tests for list_dir tool."""
+REQUIRES_JUPYTER = bool(os.getenv("JUPYTER_BASE_URL") and os.getenv("JUPYTER_TOKEN"))
 
-    @pytest.mark.asyncio
-    async def test_list_dir_with_contents_api(self):
-        """Test list_dir using Contents API."""
-        from jupyter_interpreter_mcp import server
+pytestmark = pytest.mark.integration
 
-        # Mock the Contents API response
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            return_value={
-                "name": "",
-                "path": ".",
-                "type": "directory",
-                "content": [
-                    {
-                        "name": "data.csv",
-                        "path": "data.csv",
-                        "type": "file",
-                        "size": 1024,
-                        "last_modified": "2024-01-29T12:00:00Z",
-                    },
-                    {
-                        "name": "script.py",
-                        "path": "script.py",
-                        "type": "file",
-                        "size": 512,
-                        "last_modified": "2024-01-29T11:30:00Z",
-                    },
-                    {
-                        "name": "notebooks",
-                        "path": "notebooks",
-                        "type": "directory",
-                        "size": None,
-                        "last_modified": "2024-01-29T11:00:00Z",
-                    },
-                ],
-            }
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not REQUIRES_JUPYTER,
+    reason="JUPYTER_BASE_URL and JUPYTER_TOKEN required for integration tests",
+)
+async def test_list_dir_with_real_server(monkeypatch):
+    """Test list_dir against a real Jupyter server."""
+    base_url = os.getenv("JUPYTER_BASE_URL")
+    token = os.getenv("JUPYTER_TOKEN")
+    if not base_url or not token:
+        pytest.skip("JUPYTER_BASE_URL and JUPYTER_TOKEN required")
+
+    client = RemoteJupyterClient(base_url=base_url, auth_token=token)
+
+    monkeypatch.setattr(server, "remote_client", client, raising=False)
+
+    result = await server.list_dir()
+    print(result)
+
+    assert result["error"] == ""
+    assert isinstance(result["result"], list)
+    assert result["result"]
+    for line in result["result"]:
+        assert isinstance(line, str)
+        assert line.startswith(
+            ("file ", "directory ", "notebook ", "(empty directory)")
         )
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            # Verify result structure
-            assert "error" in result
-            assert "result" in result
-            assert result["error"] == ""
-            assert len(result["result"]) == 3
-
-            # Verify content formatting
-            assert "file data.csv (1.0 KB)" in result["result"][0]
-            assert "file script.py (512 B)" in result["result"][1]
-            assert "directory notebooks (directory)" in result["result"][2]
-
-            # Verify Contents API was called
-            mock_remote_client.get_contents.assert_called_once_with(".")
-
-    @pytest.mark.asyncio
-    async def test_list_dir_empty_directory_api(self):
-        """Test list_dir with empty directory via Contents API."""
-        from jupyter_interpreter_mcp import server
-
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            return_value={
-                "name": "",
-                "path": ".",
-                "type": "directory",
-                "content": [],
-            }
-        )
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            # Verify result
-            assert result["error"] == ""
-            assert len(result["result"]) == 1
-            assert result["result"][0] == "(empty directory)"
-
-            # Verify Contents API was called
-            mock_remote_client.get_contents.assert_called_once_with(".")
-
-    @pytest.mark.asyncio
-    async def test_list_dir_handles_api_connection_error(self):
-        """Test list_dir handles Contents API connection errors gracefully."""
-        from jupyter_interpreter_mcp import server
-        from jupyter_interpreter_mcp.remote import JupyterConnectionError
-
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            side_effect=JupyterConnectionError("Cannot connect to server")
-        )
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            # Verify error is captured
-            assert "error" in result
-            assert "Cannot connect to server" in result["error"]
-            assert result["result"] == []
-
-    @pytest.mark.asyncio
-    async def test_list_dir_handles_path_not_found(self):
-        """Test list_dir handles 404 path not found errors."""
-        from jupyter_interpreter_mcp import server
-        from jupyter_interpreter_mcp.remote import JupyterConnectionError
-
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            side_effect=JupyterConnectionError("Path not found: .")
-        )
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            # Verify error is returned
-            assert "error" in result
-            assert "Path not found" in result["error"]
-            assert result["result"] == []
-
-    @pytest.mark.asyncio
-    async def test_list_dir_handles_permission_denied(self):
-        """Test list_dir handles 403 permission denied errors."""
-        from jupyter_interpreter_mcp import server
-        from jupyter_interpreter_mcp.remote import JupyterAuthError
-
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            side_effect=JupyterAuthError("Authorization failed: 403")
-        )
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            # Verify error is returned
-            assert "error" in result
-            assert "Authorization failed" in result["error"]
-            assert result["result"] == []

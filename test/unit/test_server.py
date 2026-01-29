@@ -364,3 +364,20 @@ class TestListDirTool:
             assert "Authorization failed" in result["error"]
             assert result["result"] == []
             mock_remote_client.get_contents.assert_called_once_with(".")
+
+    @pytest.mark.asyncio
+    async def test_list_dir_unexpected_exception(self):
+        """Test unexpected exception handling."""
+        from jupyter_interpreter_mcp import server
+
+        mock_remote_client = Mock()
+        mock_remote_client.get_contents = Mock(side_effect=RuntimeError("boom"))
+
+        with patch.object(server, "remote_client", mock_remote_client, create=True):
+            result = await server.list_dir()
+
+            assert "error" in result
+            assert "RuntimeError" in result["error"]
+            assert "boom" in result["error"]
+            assert result["result"] == []
+            mock_remote_client.get_contents.assert_called_once_with(".")
