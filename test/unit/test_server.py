@@ -236,3 +236,131 @@ class TestDotEnvLoading:
 
         # Verify load_dotenv was called
         mock_load_dotenv.assert_called()
+
+
+class TestListDirTool:
+    """Test list_dir tool functionality."""
+
+    @pytest.mark.asyncio
+    async def test_list_dir_success(self):
+        """Test successful directory listing."""
+        from jupyter_interpreter_mcp import server
+
+        mock_remote_client = Mock()
+        mock_remote_client.get_contents = Mock(
+            return_value={
+                "name": "",
+                "path": ".",
+                "type": "directory",
+                "content": [
+                    {
+                        "name": "file1.txt",
+                        "path": "file1.txt",
+                        "type": "file",
+                        "size": 1024,
+                        "last_modified": "2024-01-29T12:00:00Z",
+                    },
+                    {
+                        "name": "data.csv",
+                        "path": "data.csv",
+                        "type": "file",
+                        "size": 2048000,
+                        "last_modified": "2024-01-29T11:30:00Z",
+                    },
+                    {
+                        "name": "subdir",
+                        "path": "subdir",
+                        "type": "directory",
+                        "size": None,
+                        "last_modified": "2024-01-29T11:00:00Z",
+                    },
+                ],
+            }
+        )
+
+        with patch.object(server, "remote_client", mock_remote_client, create=True):
+            result = await server.list_dir()
+
+            assert result["error"] == ""
+            assert len(result["result"]) == 3
+            assert "file file1.txt (1.0 KB)" in result["result"][0]
+            assert "file data.csv (2.0 MB)" in result["result"][1]
+            assert "directory subdir (directory)" in result["result"][2]
+            mock_remote_client.get_contents.assert_called_once_with(".")
+
+    @pytest.mark.asyncio
+    async def test_list_dir_empty_directory(self):
+        """Test listing an empty directory."""
+        from jupyter_interpreter_mcp import server
+
+        mock_remote_client = Mock()
+        mock_remote_client.get_contents = Mock(
+            return_value={
+                "name": "",
+                "path": ".",
+                "type": "directory",
+                "content": [],
+            }
+        )
+
+        with patch.object(server, "remote_client", mock_remote_client, create=True):
+            result = await server.list_dir()
+
+            assert result["error"] == ""
+            assert len(result["result"]) == 1
+            assert result["result"][0] == "(empty directory)"
+            mock_remote_client.get_contents.assert_called_once_with(".")
+
+    @pytest.mark.asyncio
+    async def test_list_dir_connection_error(self):
+        """Test connection error handling."""
+        from jupyter_interpreter_mcp import server
+
+        mock_remote_client = Mock()
+        mock_remote_client.get_contents = Mock(
+            side_effect=JupyterConnectionError("Connection refused")
+        )
+
+        with patch.object(server, "remote_client", mock_remote_client, create=True):
+            result = await server.list_dir()
+
+            assert "error" in result
+            assert "Connection refused" in result["error"]
+            assert result["result"] == []
+            mock_remote_client.get_contents.assert_called_once_with(".")
+
+    @pytest.mark.asyncio
+    async def test_list_dir_path_not_found(self):
+        """Test 404 path not found error handling."""
+        from jupyter_interpreter_mcp import server
+
+        mock_remote_client = Mock()
+        mock_remote_client.get_contents = Mock(
+            side_effect=JupyterConnectionError("Path not found: .")
+        )
+
+        with patch.object(server, "remote_client", mock_remote_client, create=True):
+            result = await server.list_dir()
+
+            assert "error" in result
+            assert "Path not found" in result["error"]
+            assert result["result"] == []
+            mock_remote_client.get_contents.assert_called_once_with(".")
+
+    @pytest.mark.asyncio
+    async def test_list_dir_permission_denied(self):
+        """Test 403 permission denied error handling."""
+        from jupyter_interpreter_mcp import server
+
+        mock_remote_client = Mock()
+        mock_remote_client.get_contents = Mock(
+            side_effect=JupyterAuthError("Authorization failed: 403")
+        )
+
+        with patch.object(server, "remote_client", mock_remote_client, create=True):
+            result = await server.list_dir()
+
+            assert "error" in result
+            assert "Authorization failed" in result["error"]
+            assert result["result"] == []
+            mock_remote_client.get_contents.assert_called_once_with(".")

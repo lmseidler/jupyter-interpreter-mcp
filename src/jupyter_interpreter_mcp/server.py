@@ -27,7 +27,10 @@ session_id for a smooth interaction.
 
 Supports both Python code and bash commands (e.g., 'ls', 'pwd', 'cat file.txt').
 Bash commands are executed directly without needing shell wrappers like !ls.
-You can also use shell commands to install packages
+You can also use shell commands to install packages.
+
+Additionally, you can use the list_dir tool to explore the working directory and
+see what files are available without executing code.
     """,
 )
 sessions: dict[int, Notebook] = {}
@@ -38,8 +41,8 @@ sessions: dict[int, Notebook] = {}
     description=(
         "Executes code (Python or bash) within a persistent session, retaining "
         "past results (e.g., variables, imports). Similar to a Jupyter notebook. "
-        "A session_id is returned on first use and must be included in subsequent "
-        "requests to maintain context. Bash commands (e.g., 'ls', 'pwd') work "
+        "In order to reuse variables you need to pass in the session_id returned "
+        "when initially executing code. Bash commands (e.g., 'ls', 'pwd') work "
         "directly without wrappers and can be used to install packages."
     ),
 )
@@ -96,6 +99,81 @@ async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str] | 
             ],  # TODO: need to see if this is too verbose
             "result": [],
             "session_id": session_id,
+        }
+
+
+@mcp.tool(
+    "list_dir",
+    description="Lists all files and directories in the current working directory.",
+)
+async def list_dir() -> dict[str, list[str] | str]:
+    """Lists files and directories in the current working directory.
+
+    This tool uses the Jupyter Contents API to retrieve directory listings
+    and returns formatted output showing files and directories with their metadata
+    (type, size, last modified timestamp).
+
+    :return: A dictionary with 'error' key (containing error message or empty string)
+        and 'result' key (containing list of formatted directory entry lines).
+    :rtype: dict[str, list[str] | str]
+    """
+    try:
+        # Call Jupyter Contents API to get directory listing
+        contents_response = remote_client.get_contents(".")
+
+        # Format the response into user-friendly output
+        result_lines = []
+
+        # The contents_response for a directory contains a "content" key
+        # with list of items
+        content = contents_response.get("content", [])
+
+        if not content:
+            # Empty directory
+            result_lines.append("(empty directory)")
+        else:
+            for item in content:
+                item_type = item.get("type", "unknown")
+                name = item.get("name", "")
+                size = item.get("size")
+                last_modified = item.get("last_modified", "")
+
+                # Format size based on type
+                if item_type == "directory":
+                    size_str = "directory"
+                elif size is not None:
+                    # Convert bytes to human-readable format
+                    if size < 1024:
+                        size_str = f"{size} B"
+                    elif size < 1024 * 1024:
+                        size_str = f"{size / 1024:.1f} KB"
+                    else:
+                        size_str = f"{size / (1024 * 1024):.1f} MB"
+                else:
+                    size_str = ""
+
+                # Format the line: <type> <name> <size> - modified: <timestamp>
+                line = f"{item_type} {name}"
+                if size_str:
+                    line += f" ({size_str})"
+                if last_modified:
+                    line += f" - modified: {last_modified}"
+
+                result_lines.append(line)
+
+        return {
+            "error": "",
+            "result": result_lines,
+        }
+    except (JupyterConnectionError, JupyterAuthError) as e:
+        return {
+            "error": str(e),
+            "result": [],
+        }
+    except Exception:
+        return {
+            "error": traceback.format_exc(),
+            "result": [],
         }
 
 

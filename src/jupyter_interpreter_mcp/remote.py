@@ -3,7 +3,7 @@
 import asyncio
 import json
 import uuid
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -354,3 +354,22 @@ class RemoteJupyterClient:
             raise JupyterExecutionError(f"Failed to execute code: {e}") from e
 
         return {"error": error, "result": result}
+
+    def get_contents(self, path: str) -> dict[str, Any]:
+        """Get directory or file information from Jupyter Contents API.
+
+        :param path: Path to directory or file (e.g., '.' for current directory)
+        :type path: str
+        :return: Contents API response as dictionary with metadata
+        :rtype: dict[str, Any]
+        :raises JupyterConnectionError: If path not found (404) or connection fails
+        :raises JupyterAuthError: If permission denied (403)
+        """
+        try:
+            response = self._make_request("GET", f"/api/contents/{path}")
+            return cast(dict[str, Any], response.json())
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                raise JupyterConnectionError(f"Path not found: {path}") from e
+            # 403 is already handled by _make_request as JupyterAuthError
+            raise
