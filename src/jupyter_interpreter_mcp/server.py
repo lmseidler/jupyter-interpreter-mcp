@@ -22,8 +22,8 @@ mcp = FastMCP(
     name="Code Interpreter",
     instructions="""You can execute code by sending a request with the code you want
 to run. Think of this tool as a jupyter notebook. It will remember your previously
-executed code, if you pass in your session_id. It is crucial to remember your
-session_id for a smooth interaction.
+executed code, if you pass in your session_id. It is crucial to provide your
+session_id for that to work.
 
 Supports both Python code and bash commands (e.g., 'ls', 'pwd', 'cat file.txt').
 Bash commands are executed directly without needing shell wrappers like !ls.
@@ -41,9 +41,10 @@ sessions: dict[int, Notebook] = {}
     description=(
         "Executes code (Python or bash) within a persistent session, retaining "
         "past results (e.g., variables, imports). Similar to a Jupyter notebook. "
-        "In order to reuse variables you need to pass in the session_id returned "
-        "when initially executing code. Bash commands (e.g., 'ls', 'pwd') work "
-        "directly without wrappers and can be used to install packages."
+        "In order to reuse variables it is crucial to pass in a session_id. "
+        "A session_id is returned on every execution."
+        "Bash commands (e.g., 'ls', 'pwd') work directly without wrappers and "
+        "can be used to install packages."
     ),
 )
 async def execute_code(code: str, session_id: int = 0) -> dict[str, list[str] | int]:
