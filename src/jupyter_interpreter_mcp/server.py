@@ -100,12 +100,15 @@ async def cleanup_expired_sessions() -> int:
     return len(expired_ids)
 
 
-async def restore_sessions_from_disk() -> int:
+async def restore_sessions_from_disk(target_session_id: str | None = None) -> int:
     """Restore existing sessions from disk on server startup.
 
     Scans the sessions directory for existing session folders, reads their
     metadata, creates new kernels, and populates the sessions registry.
 
+    :param target_session_id: Optional specific session ID to restore.
+        If provided, only that session is considered.
+    :type target_session_id: str | None
     :return: Number of sessions restored.
     :rtype: int
     """
@@ -130,10 +133,13 @@ import os
 import json
 
 sessions_dir = {repr(sessions_dir)}
+target_session_id = {repr(target_session_id)}
 result = []
 
 if os.path.exists(sessions_dir):
     for item in os.listdir(sessions_dir):
+        if target_session_id and item != target_session_id:
+            continue
         item_path = os.path.join(sessions_dir, item)
         if os.path.isdir(item_path):
             metadata_path = os.path.join(item_path, '.session.json')
@@ -257,6 +263,20 @@ print(f"Restored session working directory: {{os.getcwd()}}")
     return restored_count
 
 
+async def ensure_session_available(session_id: str) -> bool:
+    """Ensure a session is loaded in memory, restoring it on-demand if needed.
+
+    :param session_id: Session ID to ensure is available.
+    :type session_id: str
+    :return: True if the session is available in memory, False otherwise.
+    :rtype: bool
+    """
+    if session_id in sessions and session_id in notebooks:
+        return True
+    restored = await restore_sessions_from_disk(session_id)
+    return restored > 0 and session_id in sessions and session_id in notebooks
+
+
 @mcp.tool(
     "create_session",
     description=(
@@ -355,6 +375,9 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
     global sessions, notebooks, remote_client
 
     try:
+        # Restore from disk if not already loaded in memory
+        await ensure_session_available(session_id)
+
         # Validate session exists
         session = validate_session(session_id)
         notebook = notebooks[session_id]
@@ -728,6 +751,16 @@ def main() -> None:
         help="Session time-to-live in seconds (0 = no expiry, default: %(default)s)",
     )
     parser.add_argument(
+        "--restore-sessions-on-startup",
+        action="store_true",
+        default=os.getenv("RESTORE_SESSIONS_ON_STARTUP", "").strip().lower()
+        in {"1", "true", "yes", "on"},
+        help=(
+            "Eagerly restore all sessions at startup "
+            "(default: %(default)s, on-demand restore is always enabled)"
+        ),
+    )
+    parser.add_argument(
         "--version",
         "-v",
         action="version",
@@ -771,15 +804,18 @@ def main() -> None:
         print(f"Invalid configuration: {e}", file=sys.stderr)
         sys.exit(1)
 
-    # Restore existing sessions from disk
-    print(f"Restoring sessions from {sessions_dir}...")
     import asyncio
 
-    try:
-        restored = asyncio.run(restore_sessions_from_disk())
-        print(f"Restored {restored} session(s)")
-    except Exception as e:
-        print(f"Warning: Session restoration failed: {e}", file=sys.stderr)
+    # Optional eager restore (on-demand restore is always active in execute_code)
+    if args.restore_sessions_on_startup:
+        print(f"Restoring sessions from {sessions_dir}...")
+        try:
+            restored = asyncio.run(restore_sessions_from_disk())
+            print(f"Restored {restored} session(s)")
+        except Exception as e:
+            print(f"Warning: Session restoration failed: {e}", file=sys.stderr)
+    else:
+        print("Skipping eager startup restore (using on-demand session restore)")
 
     # Run cleanup of expired sessions
     if session_ttl > 0:

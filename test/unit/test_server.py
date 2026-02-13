@@ -1,10 +1,11 @@
 """Unit tests for server module argument parsing."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
 from jupyter_interpreter_mcp.remote import JupyterAuthError, JupyterConnectionError
+from jupyter_interpreter_mcp.session import Session
 
 
 class TestArgumentParsing:
@@ -236,6 +237,107 @@ class TestDotEnvLoading:
 
         # Verify load_dotenv was called
         mock_load_dotenv.assert_called()
+
+
+class TestLazySessionRestore:
+    """Test on-demand session restoration behavior."""
+
+    @pytest.mark.asyncio
+    @patch(
+        "jupyter_interpreter_mcp.server.restore_sessions_from_disk",
+        new_callable=AsyncMock,
+    )
+    async def test_execute_code_restores_missing_session_on_demand(self, mock_restore):
+        """Test execute_code lazily restores missing sessions."""
+        from jupyter_interpreter_mcp import server
+
+        session_id = "restored-session"
+        current_time = 123.0
+
+        mock_notebook = Mock()
+        mock_notebook.execute_new_code = AsyncMock(
+            return_value={"error": [], "result": ["ok\n"]}
+        )
+        mock_notebook.dump_to_file = AsyncMock()
+
+        async def restore_side_effect(target_session_id=None):
+            if target_session_id == session_id:
+                server.sessions[session_id] = Session(
+                    id=session_id,
+                    kernel_id="kernel-1",
+                    created_at=current_time,
+                    last_access=current_time,
+                    directory=f"/sessions/{session_id}",
+                )
+                server.notebooks[session_id] = mock_notebook
+                return 1
+            return 0
+
+        mock_restore.side_effect = restore_side_effect
+
+        server.sessions = {}
+        server.notebooks = {}
+        server.remote_client = Mock()
+        server.remote_client.update_session_metadata = AsyncMock()
+
+        result = await server.execute_code("print('ok')", session_id)
+
+        assert result["error"] == []
+        assert result["session_id"] == session_id
+        mock_restore.assert_awaited_once_with(session_id)
+        server.remote_client.update_session_metadata.assert_awaited_once()
+        mock_notebook.dump_to_file.assert_awaited_once()
+
+
+class TestStartupRestoreConfiguration:
+    """Test startup restore configuration for performance tuning."""
+
+    @patch(
+        "jupyter_interpreter_mcp.server.restore_sessions_from_disk",
+        new_callable=AsyncMock,
+    )
+    @patch("jupyter_interpreter_mcp.server.RemoteJupyterClient")
+    @patch("jupyter_interpreter_mcp.server.mcp")
+    def test_skips_eager_restore_by_default(
+        self, mock_mcp, mock_client_class, mock_restore
+    ):
+        """Test startup skips full restore unless explicitly enabled."""
+        mock_client = Mock()
+        mock_client.validate_connection = Mock()
+        mock_client_class.return_value = mock_client
+
+        with patch.dict("os.environ", {"JUPYTER_TOKEN": "test-token"}):
+            with patch("sys.argv", ["jupyter-interpreter-mcp"]):
+                from jupyter_interpreter_mcp.server import main
+
+                main()
+
+        mock_restore.assert_not_awaited()
+        mock_mcp.run.assert_called_once()
+
+    @patch(
+        "jupyter_interpreter_mcp.server.restore_sessions_from_disk",
+        new_callable=AsyncMock,
+    )
+    @patch("jupyter_interpreter_mcp.server.RemoteJupyterClient")
+    @patch("jupyter_interpreter_mcp.server.mcp")
+    def test_can_enable_eager_restore(self, mock_mcp, mock_client_class, mock_restore):
+        """Test eager restore can still be enabled via CLI flag."""
+        mock_client = Mock()
+        mock_client.validate_connection = Mock()
+        mock_client_class.return_value = mock_client
+
+        with patch.dict("os.environ", {"JUPYTER_TOKEN": "test-token"}):
+            with patch(
+                "sys.argv",
+                ["jupyter-interpreter-mcp", "--restore-sessions-on-startup"],
+            ):
+                from jupyter_interpreter_mcp.server import main
+
+                main()
+
+        mock_restore.assert_awaited_once_with()
+        mock_mcp.run.assert_called_once()
 
 
 class TestListDirTool:
