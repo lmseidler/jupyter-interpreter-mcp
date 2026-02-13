@@ -264,7 +264,13 @@ print(f"Restored session working directory: {{os.getcwd()}}")
 
 
 async def ensure_session_available(session_id: str) -> bool:
-    """Ensure a session is loaded in memory, restoring it on-demand if needed."""
+    """Ensure a session is loaded in memory, restoring it on-demand if needed.
+
+    :param session_id: Session ID to ensure is available.
+    :type session_id: str
+    :return: True if the session is available in memory, False otherwise.
+    :rtype: bool
+    """
     if session_id in sessions and session_id in notebooks:
         return True
     restored = await restore_sessions_from_disk(session_id)
@@ -369,7 +375,7 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
     global sessions, notebooks, remote_client
 
     try:
-        # Restore from disk on-demand when server is cold-started
+        # Restore from disk if not already loaded in memory
         await ensure_session_available(session_id)
 
         # Validate session exists

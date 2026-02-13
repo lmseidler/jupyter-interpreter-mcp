@@ -243,7 +243,10 @@ class TestLazySessionRestore:
     """Test on-demand session restoration behavior."""
 
     @pytest.mark.asyncio
-    @patch("jupyter_interpreter_mcp.server.restore_sessions_from_disk", new_callable=AsyncMock)
+    @patch(
+        "jupyter_interpreter_mcp.server.restore_sessions_from_disk",
+        new_callable=AsyncMock,
+    )
     async def test_execute_code_restores_missing_session_on_demand(self, mock_restore):
         """Test execute_code lazily restores missing sessions."""
         from jupyter_interpreter_mcp import server
@@ -289,7 +292,10 @@ class TestLazySessionRestore:
 class TestStartupRestoreConfiguration:
     """Test startup restore configuration for performance tuning."""
 
-    @patch("jupyter_interpreter_mcp.server.restore_sessions_from_disk", new_callable=AsyncMock)
+    @patch(
+        "jupyter_interpreter_mcp.server.restore_sessions_from_disk",
+        new_callable=AsyncMock,
+    )
     @patch("jupyter_interpreter_mcp.server.RemoteJupyterClient")
     @patch("jupyter_interpreter_mcp.server.mcp")
     def test_skips_eager_restore_by_default(
@@ -306,15 +312,16 @@ class TestStartupRestoreConfiguration:
 
                 main()
 
-        assert mock_restore.await_count == 0
+        mock_restore.assert_not_awaited()
         mock_mcp.run.assert_called_once()
 
-    @patch("jupyter_interpreter_mcp.server.restore_sessions_from_disk", new_callable=AsyncMock)
+    @patch(
+        "jupyter_interpreter_mcp.server.restore_sessions_from_disk",
+        new_callable=AsyncMock,
+    )
     @patch("jupyter_interpreter_mcp.server.RemoteJupyterClient")
     @patch("jupyter_interpreter_mcp.server.mcp")
-    def test_can_enable_eager_restore(
-        self, mock_mcp, mock_client_class, mock_restore
-    ):
+    def test_can_enable_eager_restore(self, mock_mcp, mock_client_class, mock_restore):
         """Test eager restore can still be enabled via CLI flag."""
         mock_client = Mock()
         mock_client.validate_connection = Mock()
