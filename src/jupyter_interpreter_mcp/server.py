@@ -227,8 +227,17 @@ print(f"Restored session working directory: {{os.getcwd()}}")
                 notebook.kernel_id = kernel_id
                 notebooks[session_id] = notebook
 
-                # Restore execution history if it exists
-                await notebook.load_from_file()
+                # Restore execution history
+                history_restored = await notebook.load_from_file()
+                if not history_restored:
+                    print(
+                        f"Warning: Failed to restore history for session {session_id}",
+                        file=sys.stderr,
+                    )
+                    remote_client.shutdown_kernel(kernel_id)
+                    sessions.pop(session_id, None)
+                    notebooks.pop(session_id, None)
+                    continue
 
                 print(f"Restored session: {session_id}")
                 restored_count += 1

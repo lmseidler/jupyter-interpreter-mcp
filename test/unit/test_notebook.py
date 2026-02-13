@@ -199,6 +199,8 @@ class TestLoadFromFile:
         assert result is True
         # Should call execute twice: once to read, once to restore
         assert mock_remote_client.execute.call_count == 2
+        # Restored history should contain only restored user code
+        assert notebook.history == ["x = 10"]
 
     @pytest.mark.asyncio
     async def test_load_from_file_not_found(self, mock_remote_client):
@@ -218,7 +220,8 @@ class TestLoadFromFile:
 
         result = await notebook.load_from_file()
 
-        assert result is False
+        assert result is True
+        assert notebook.history == []
 
     @pytest.mark.asyncio
     async def test_load_from_file_with_error(self, mock_remote_client):

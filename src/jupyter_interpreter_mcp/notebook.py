@@ -100,7 +100,8 @@ with open({repr(self.file_path)}, 'w') as f:
         """Loads and re-executes code from the session history file.
 
         Attempts to read the session file from the remote container and execute
-        its contents to restore the kernel state.
+        its contents to restore the kernel state. The restored code is executed
+        but NOT added to history again (it's already in the saved history).
 
         :return: True if the file was successfully loaded and executed,
             False if an error occurred.
@@ -123,14 +124,17 @@ else:
     print('FILE_NOT_FOUND')
 """
         try:
-            result = await self.execute_new_code(code)
+            # Use remote_client.execute directly to avoid adding
+            # load helper code to history
+            result = await self.remote_client.execute(self.kernel_id, code)
             if result["error"]:
                 return False
 
             output = "".join(result["result"])
 
             if "FILE_NOT_FOUND" in output:
-                return False
+                self.history = []
+                return True
 
             # Extract file content between markers
             start_marker = "FILE_CONTENT_START"
@@ -142,9 +146,15 @@ else:
                 file_content = output[start_idx:end_idx].strip()
 
                 # Execute the file content to restore state
+                # Use remote_client.execute directly to avoid adding to history again
                 if file_content:
-                    restore_result = await self.execute_new_code(file_content)
+                    self.history = [file_content]
+                    restore_result = await self.remote_client.execute(
+                        self.kernel_id, file_content
+                    )
                     return len(restore_result["error"]) == 0
+                self.history = []
+                return True
 
             return False
         except Exception:
