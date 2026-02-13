@@ -42,7 +42,7 @@ Create a new token for accessing the Jupyter server or use an existing token.
 Start the server using uvx:
 
 ```bash
-uvx jupyter-interpreter-mcp --jupyter-base-url http://localhost:8889 --jupyter-token abc123def456... --notebooks-folder /home/jovyan/notebooks
+uvx jupyter-interpreter-mcp --jupyter-base-url http://localhost:8889 --jupyter-token abc123def456... --sessions-dir /home/jovyan/sessions --session-ttl 3600
 ```
 
 or to add it to e.g. Claude Code:
@@ -58,8 +58,10 @@ or to add it to e.g. Claude Code:
         "http://localhost:8889",
         "--jupyter-token",
         "abc123def456...",
-        "--notebooks-folder",
-        "/home/jovyan/notebooks"
+        "--sessions-dir",
+        "/home/jovyan/sessions",
+        "--session-ttl",
+        "3600"
       ]
     }
   }
@@ -73,7 +75,8 @@ Create a `.env` file in the project root:
 ```bash
 JUPYTER_BASE_URL=http://localhost:8889
 JUPYTER_TOKEN=abc123def456...
-NOTEBOOKS_FOLDER=/home/jovyan/notebooks
+SESSIONS_DIR=/home/jovyan/sessions
+SESSION_TTL=3600  # Optional: session expiry in seconds (0 = never expire)
 ```
 
 See `.env.example` for full configuration options and Docker setup instructions.
@@ -89,7 +92,46 @@ uv run jupyter-interpreter-mcp
 
 The server will validate the connection to Jupyter on startup and fail with a clear error message if the connection cannot be established.
 
+## Session-Based Workflow
+
+The server uses a session-based architecture where each session has:
+- A unique **UUID-based session ID**
+- An **isolated directory** on the Jupyter server at `{sessions-dir}/{session-id}/`
+- A **persistent Jupyter kernel** that maintains execution state (variables, imports)
+- **Automatic restoration** on server restart - sessions persist across restarts
+
+### Typical Workflow
+
+1. **Create a session** using `create_session`
+2. **Execute code** in the session using `execute_code`
+3. **Upload/download files** within the session directory using `upload_file` and `download_file`
+4. **List files** in the session directory using `list_dir`
+
+Sessions automatically expire after the configured TTL (time-to-live) period.
+
 ## Tools
+
+### create_session
+
+Creates a new isolated session with a dedicated directory and Jupyter kernel.
+
+**Parameters:** None
+
+**Returns:**
+A dictionary containing:
+- `session_id` (string): UUID identifier for the session
+- `message` (string): Confirmation message
+- `directory` (string): Path to the session directory
+
+**Example usage:**
+```python
+result = create_session()
+# Returns: {
+#   "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+#   "message": "Session created successfully",
+#   "directory": "/home/jovyan/sessions/a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+# }
+```
 
 ### execute_code
 
@@ -97,26 +139,115 @@ Executes code (Python or bash) within a persistent session, retaining past resul
 
 **Parameters:**
 - `code` (string, required): The code to execute (Python or bash commands)
-- `session_id` (integer, optional): A unique identifier used to associate multiple code execution requests with the same logical session. If this is the first request, you may omit it or set it to 0. The system will generate and return a new session_id, which should be reused in follow-up requests to maintain continuity within the same session.
+- `session_id` (string, required): The session ID from `create_session`
 
 **Returns:**
 A dictionary containing:
 - `result` (list of strings): Output from the code execution
 - `error` (list of strings): Any errors that occurred during execution
-- `session_id` (integer): The session ID to use for subsequent requests
+- `session_id` (string): The session ID used
 
 **Example usage:**
 ```python
-# First execution - creates a new session
-result = execute_code(code="x = 42\nprint(x)")
-# Returns: {"result": ["42"], "error": [], "session_id": 1704380400}
+# Create a session first
+session = create_session()
+session_id = session["session_id"]
 
-# Subsequent execution - reuses the session
-result = execute_code(code="print(x * 2)", session_id=1704380400)
-# Returns: {"result": ["84"], "error": [], "session_id": 1704380400}
+# Execute code in the session
+result = execute_code(code="x = 42\nprint(x)", session_id=session_id)
+# Returns: {"result": ["42"], "error": [], "session_id": "a1b2c3d4-..."}
+
+# Subsequent execution - reuses the session state
+result = execute_code(code="print(x * 2)", session_id=session_id)
+# Returns: {"result": ["84"], "error": [], "session_id": "a1b2c3d4-..."}
 
 # Bash commands
-result = execute_code(code="ls -la", session_id=1704380400)
+result = execute_code(code="ls -la", session_id=session_id)
+```
+
+### upload_file
+
+Upload a file to the session directory. Automatically detects binary vs text content.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `destination_path` (string, required): Relative path within session directory (supports subdirectories)
+- `content` (string, required): File content (base64-encoded for binary, plain text otherwise)
+- `encoding` (string, required): Either "base64" or "text"
+
+**Returns:**
+A dictionary containing:
+- `success` (boolean): Whether the upload succeeded
+- `path` (string): Absolute path where file was written
+- `message` (string): Confirmation message
+
+**Example usage:**
+```python
+# Upload text file
+upload_file(
+    session_id=session_id,
+    destination_path="script.py",
+    content="print('Hello, World!')",
+    encoding="text"
+)
+
+# Upload binary file (e.g., image)
+import base64
+with open("image.png", "rb") as f:
+    content = base64.b64encode(f.read()).decode()
+upload_file(
+    session_id=session_id,
+    destination_path="images/logo.png",
+    content=content,
+    encoding="base64"
+)
+```
+
+### download_file
+
+Download a file from the session directory.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `path` (string, required): Relative path within session directory
+
+**Returns:**
+A dictionary containing:
+- `content` (string): File content (base64-encoded for binary, plain text otherwise)
+- `encoding` (string): Either "base64" or "text"
+- `path` (string): The requested path
+
+**Example usage:**
+```python
+# Download text file
+result = download_file(session_id=session_id, path="script.py")
+# Returns: {"content": "print('Hello, World!')", "encoding": "text", "path": "script.py"}
+
+# Download binary file
+result = download_file(session_id=session_id, path="images/logo.png")
+# Returns: {"content": "iVBORw0KGgo...", "encoding": "base64", "path": "images/logo.png"}
+```
+
+### list_dir
+
+List files and directories within the session directory.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `path` (string, optional): Subdirectory path within session (defaults to session root)
+
+**Returns:**
+A dictionary containing:
+- `files` (list): List of files with names, types, sizes
+- `current_directory` (string): The directory that was listed
+
+**Example usage:**
+```python
+# List session root
+result = list_dir(session_id=session_id)
+
+# List subdirectory
+result = list_dir(session_id=session_id, path="images")
 ```
 
 ## Development

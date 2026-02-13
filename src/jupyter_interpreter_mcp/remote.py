@@ -355,6 +355,76 @@ class RemoteJupyterClient:
 
         return {"error": error, "result": result}
 
+    async def create_session_directory(
+        self, kernel_id: str, session_dir: str, created_at: float, last_access: float
+    ) -> None:
+        """Create a session directory with metadata file via kernel execution.
+
+        :param kernel_id: ID of the kernel to execute code in
+        :type kernel_id: str
+        :param session_dir: Path to session directory
+        :type session_dir: str
+        :param created_at: Session creation timestamp
+        :type created_at: float
+        :param last_access: Session last access timestamp
+        :type last_access: float
+        :raises JupyterExecutionError: If directory creation fails
+        """
+        code = f"""
+import os
+import json
+
+# Create session directory
+os.makedirs({repr(session_dir)}, exist_ok=True)
+
+# Create metadata file
+metadata = {{
+    'created_at': {created_at},
+    'last_access': {last_access}
+}}
+with open(os.path.join({repr(session_dir)}, '.session.json'), 'w') as f:
+    json.dump(metadata, f, indent=2)
+"""
+        result = await self.execute(kernel_id, code)
+        if result["error"]:
+            raise JupyterExecutionError(
+                f"Failed to create session directory: {'; '.join(result['error'])}"
+            )
+
+    async def update_session_metadata(
+        self, kernel_id: str, session_dir: str, last_access: float
+    ) -> None:
+        """Update session metadata file with new last_access timestamp.
+
+        :param kernel_id: ID of the kernel to execute code in
+        :type kernel_id: str
+        :param session_dir: Path to session directory
+        :type session_dir: str
+        :param last_access: New last access timestamp
+        :type last_access: float
+        :raises JupyterExecutionError: If update fails
+        """
+        code = f"""
+import os
+import json
+
+metadata_path = os.path.join({repr(session_dir)}, '.session.json')
+if not os.path.exists(metadata_path):
+    raise FileNotFoundError(f"Session metadata file not found: {{metadata_path}}")
+
+with open(metadata_path, 'r') as f:
+    metadata = json.load(f)
+metadata['last_access'] = {last_access}
+with open(metadata_path, 'w') as f:
+    json.dump(metadata, f, indent=2)
+print("Metadata updated successfully")
+"""
+        result = await self.execute(kernel_id, code)
+        if result["error"]:
+            raise JupyterExecutionError(
+                f"Failed to update session metadata: {'; '.join(result['error'])}"
+            )
+
     def get_contents(self, path: str) -> dict[str, Any]:
         """Get directory or file information from Jupyter Contents API.
 

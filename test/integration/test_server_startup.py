@@ -22,7 +22,7 @@ class TestServerStartup:
                 "http://test:8888",
                 "--jupyter-token",
                 "test-token",
-                "--notebooks-folder",
+                "--sessions-dir",
                 "/test/path",
             ],
         ):
@@ -53,7 +53,7 @@ class TestServerStartup:
             {
                 "JUPYTER_BASE_URL": "http://env:8888",
                 "JUPYTER_TOKEN": "env-token",
-                "NOTEBOOKS_FOLDER": "/env/path",
+                "SESSIONS_DIR": "/env/path",
             },
         ):
             with patch("sys.argv", ["jupyter-interpreter-mcp"]):
@@ -115,7 +115,7 @@ class TestServerStartup:
                 "sys.argv",
                 [
                     "jupyter-interpreter-mcp",
-                    "--notebooks-folder",
+                    "--sessions-dir",
                     "/custom/path",
                 ],
             ):
@@ -125,4 +125,4 @@ class TestServerStartup:
 
                 # Verify global variables are set
                 assert server.remote_client == mock_client
-                assert server.notebooks_folder == "/custom/path"
+                assert server.sessions_dir == "/custom/path"

@@ -18,23 +18,26 @@ class Notebook:
     """
 
     def __init__(
-        self, session_id: int, remote_client: RemoteJupyterClient, notebooks_folder: str
+        self,
+        session_id: str,
+        remote_client: RemoteJupyterClient,
+        session_directory: str,
     ) -> None:
         """Initializes a new Notebook session.
 
-        :param session_id: A unique identifier for this notebook session.
-        :type session_id: int
+        :param session_id: A unique identifier for this notebook session (UUID).
+        :type session_id: str
         :param remote_client: Client for interacting with remote Jupyter server.
         :type remote_client: RemoteJupyterClient
-        :param notebooks_folder: Path to notebooks folder on remote filesystem.
-        :type notebooks_folder: str
+        :param session_directory: Path to session directory on remote filesystem.
+        :type session_directory: str
         """
         self.remote_client = remote_client
-        self.session_id: int = session_id
-        self.notebooks_folder = notebooks_folder
+        self.session_id: str = session_id
+        self.session_directory = session_directory
 
         self.kernel_id: str | None = None
-        self.file_path: str = os.path.join(notebooks_folder, f"{self.session_id}.txt")
+        self.file_path: str = os.path.join(session_directory, "history.txt")
         self.history: list[str] = []
 
     async def connect(self) -> None:

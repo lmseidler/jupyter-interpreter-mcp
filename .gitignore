@@ -214,3 +214,5 @@ __marimo__/
 .serena/
 openspec/
 AGENTS.md
+.github/
+uv.lock
