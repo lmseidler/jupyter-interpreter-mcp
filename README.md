@@ -61,7 +61,8 @@ or to add it to e.g. Claude Code:
         "--sessions-dir",
         "/home/jovyan/sessions",
         "--session-ttl",
-        "3600"
+        "3600",
+        "--restore-sessions-on-startup"
       ]
     }
   }
@@ -77,6 +78,7 @@ JUPYTER_BASE_URL=http://localhost:8889
 JUPYTER_TOKEN=abc123def456...
 SESSIONS_DIR=/home/jovyan/sessions
 SESSION_TTL=3600  # Optional: session expiry in seconds (0 = never expire)
+RESTORE_SESSIONS_ON_STARTUP=false  # Optional: eager restore all sessions on startup
 ```
 
 See `.env.example` for full configuration options and Docker setup instructions.
@@ -98,7 +100,7 @@ The server uses a session-based architecture where each session has:
 - A unique **UUID-based session ID**
 - An **isolated directory** on the Jupyter server at `{sessions-dir}/{session-id}/`
 - A **persistent Jupyter kernel** that maintains execution state (variables, imports)
-- **Automatic restoration** on server restart - sessions persist across restarts
+- **On-demand restoration** on access after restart (with optional eager restore at startup)
 
 ### Typical Workflow
 
