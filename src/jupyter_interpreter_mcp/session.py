@@ -1,6 +1,7 @@
 """Session management for Jupyter code execution."""
 
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -41,6 +42,93 @@ def validate_path(session_dir: str, relative_path: str) -> str:
         raise ValueError(f"Path '{relative_path}' escapes session directory")
 
     return target_real
+
+
+def get_allowed_upload_dirs() -> list[str]:
+    """Get the list of allowed directories for host file uploads.
+
+    Reads from the ``ALLOWED_UPLOAD_DIRS`` environment variable, which should
+    contain a colon-separated list of absolute directory paths.  When the
+    variable is unset or empty the current working directory is used as the
+    default.
+
+    :return: List of absolute, resolved directory paths.
+    :rtype: list[str]
+    """
+    env_value = os.environ.get("ALLOWED_UPLOAD_DIRS", "").strip()
+    if env_value:
+        dirs = [os.path.realpath(d.strip()) for d in env_value.split(":") if d.strip()]
+    else:
+        dirs = [os.path.realpath(os.getcwd())]
+    return dirs
+
+
+def validate_host_path(host_path: str, allowed_dirs: list[str] | None = None) -> str:
+    """Validate that a host filesystem path is within allowed directories.
+
+    The path must be absolute.  After resolving symlinks the resolved path
+    must fall inside one of the *allowed_dirs*.
+
+    :param host_path: Absolute path on the host filesystem.
+    :type host_path: str
+    :param allowed_dirs: Directories the path must reside within.
+        Defaults to :func:`get_allowed_upload_dirs` when ``None``.
+    :type allowed_dirs: list[str] | None
+    :return: The resolved absolute path.
+    :rtype: str
+    :raises ValueError: If the path is not absolute or is outside allowed
+        directories.
+    """
+    if not os.path.isabs(host_path):
+        raise ValueError(f"Host path must be absolute: {host_path}")
+
+    resolved = os.path.realpath(host_path)
+
+    if allowed_dirs is None:
+        allowed_dirs = get_allowed_upload_dirs()
+
+    for allowed in allowed_dirs:
+        allowed_real = os.path.realpath(allowed)
+        if resolved == allowed_real or resolved.startswith(allowed_real + os.sep):
+            return resolved
+
+    raise ValueError(f"Path '{host_path}' is outside allowed upload directories")
+
+
+# Patterns that indicate sensitive files which should never be uploaded.
+_SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"(^|/)\.env($|\.\w+$)", re.IGNORECASE),
+    re.compile(r"(^|/)\.ssh/", re.IGNORECASE),
+    re.compile(r"(^|/)\.gnupg/", re.IGNORECASE),
+    re.compile(r"(^|/)\.aws/", re.IGNORECASE),
+    re.compile(r"(^|/)\.docker/config\.json$", re.IGNORECASE),
+    re.compile(r"(^|/)credentials(\.json|\.yaml|\.yml)?$", re.IGNORECASE),
+    re.compile(r"(^|/)\.netrc$", re.IGNORECASE),
+    re.compile(r"(^|/)id_rsa($|\.pub$)", re.IGNORECASE),
+    re.compile(r"(^|/)id_ed25519($|\.pub$)", re.IGNORECASE),
+    re.compile(r"(^|/)id_ecdsa($|\.pub$)", re.IGNORECASE),
+    re.compile(r"(^|/)\.npmrc$", re.IGNORECASE),
+    re.compile(r"(^|/)\.pypirc$", re.IGNORECASE),
+    re.compile(r"(^|/)secret[s]?(\.json|\.yaml|\.yml|\.txt)?$", re.IGNORECASE),
+    re.compile(r"(^|/)token[s]?(\.json|\.yaml|\.yml|\.txt)?$", re.IGNORECASE),
+    re.compile(r"(^|/)\.git-credentials$", re.IGNORECASE),
+]
+
+
+def is_sensitive_file(file_path: str) -> bool:
+    """Check whether a file path matches known sensitive file patterns.
+
+    :param file_path: File path (absolute or relative) to check.
+    :type file_path: str
+    :return: ``True`` if the path matches a sensitive pattern.
+    :rtype: bool
+    """
+    # Normalise to forward-slash for consistent matching
+    normalised = file_path.replace(os.sep, "/")
+    for pattern in _SENSITIVE_PATTERNS:
+        if pattern.search(normalised):
+            return True
+    return False
 
 
 # Known binary file extensions

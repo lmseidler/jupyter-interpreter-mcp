@@ -3,6 +3,7 @@
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +11,9 @@ from jupyter_interpreter_mcp.session import (
     Session,
     detect_content_type,
     generate_session_id,
+    get_allowed_upload_dirs,
+    is_sensitive_file,
+    validate_host_path,
     validate_path,
 )
 
@@ -259,3 +263,204 @@ class TestSession:
         assert session.is_expired(ttl=3601) is False
         # Just over TTL - expired
         assert session.is_expired(ttl=3599) is True
+
+
+class TestGetAllowedUploadDirs:
+    """Test allowed upload directory configuration."""
+
+    def test_defaults_to_cwd_when_env_unset(self):
+        """Should return CWD when ALLOWED_UPLOAD_DIRS is not set."""
+        import os
+
+        with patch.dict("os.environ", {}, clear=True):
+            dirs = get_allowed_upload_dirs()
+            assert len(dirs) == 1
+            assert dirs[0] == os.path.realpath(os.getcwd())
+
+    def test_reads_single_directory_from_env(self):
+        """Should parse a single directory from the environment variable."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
+                dirs = get_allowed_upload_dirs()
+                assert len(dirs) == 1
+                import os
+
+                assert dirs[0] == os.path.realpath(tmpdir)
+
+    def test_reads_multiple_directories_from_env(self):
+        """Should parse colon-separated directories."""
+        with tempfile.TemporaryDirectory() as d1:
+            with tempfile.TemporaryDirectory() as d2:
+                with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": f"{d1}:{d2}"}):
+                    dirs = get_allowed_upload_dirs()
+                    assert len(dirs) == 2
+
+    def test_empty_env_var_defaults_to_cwd(self):
+        """Empty env var should fallback to CWD."""
+        with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": ""}):
+            dirs = get_allowed_upload_dirs()
+            assert len(dirs) == 1
+
+    def test_ignores_empty_segments(self):
+        """Should ignore empty segments from double colons."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": f"{tmpdir}::"}):
+                dirs = get_allowed_upload_dirs()
+                assert len(dirs) == 1
+
+
+class TestValidateHostPath:
+    """Test host path validation for allowed directories."""
+
+    def test_valid_path_within_allowed_dir(self):
+        """Path within allowed directory should pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "data.csv"
+            test_file.write_text("a,b,c")
+
+            result = validate_host_path(str(test_file), [tmpdir])
+            import os
+
+            assert result == os.path.realpath(str(test_file))
+
+    def test_relative_path_raises(self):
+        """Relative path should raise ValueError."""
+        with pytest.raises(ValueError, match="must be absolute"):
+            validate_host_path("relative/path.txt", ["/tmp"])
+
+    def test_path_outside_allowed_dirs_raises(self):
+        """Path outside all allowed directories should raise ValueError."""
+        with tempfile.TemporaryDirectory() as allowed:
+            with tempfile.TemporaryDirectory() as outside:
+                test_file = Path(outside) / "secret.txt"
+                test_file.write_text("secret")
+
+                with pytest.raises(ValueError, match="outside allowed"):
+                    validate_host_path(str(test_file), [allowed])
+
+    def test_traversal_attempt_raises(self):
+        """Path with .. that escapes allowed dir should raise."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad_path = f"{tmpdir}/../../../etc/passwd"
+            with pytest.raises(ValueError, match="outside allowed"):
+                validate_host_path(bad_path, [tmpdir])
+
+    def test_symlink_outside_allowed_raises(self):
+        """Symlink resolving outside allowed dir should raise."""
+        with tempfile.TemporaryDirectory() as allowed:
+            with tempfile.TemporaryDirectory() as outside:
+                outside_file = Path(outside) / "data.txt"
+                outside_file.write_text("data")
+
+                link = Path(allowed) / "link.txt"
+                link.symlink_to(outside_file)
+
+                with pytest.raises(ValueError, match="outside allowed"):
+                    validate_host_path(str(link), [allowed])
+
+    def test_multiple_allowed_dirs(self):
+        """Path in any of the allowed directories should pass."""
+        with tempfile.TemporaryDirectory() as d1:
+            with tempfile.TemporaryDirectory() as d2:
+                test_file = Path(d2) / "file.txt"
+                test_file.write_text("ok")
+
+                result = validate_host_path(str(test_file), [d1, d2])
+                import os
+
+                assert result == os.path.realpath(str(test_file))
+
+    def test_defaults_to_env_allowed_dirs(self):
+        """Should use get_allowed_upload_dirs when allowed_dirs is None."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "file.txt"
+            test_file.write_text("ok")
+
+            with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
+                result = validate_host_path(str(test_file))
+                import os
+
+                assert result == os.path.realpath(str(test_file))
+
+
+class TestIsSensitiveFile:
+    """Test sensitive file detection utility."""
+
+    def test_env_file_is_sensitive(self):
+        """`.env` files should be detected as sensitive."""
+        assert is_sensitive_file(".env") is True
+        assert is_sensitive_file("/project/.env") is True
+        assert is_sensitive_file("/project/.env.local") is True
+        assert is_sensitive_file("/project/.env.production") is True
+
+    def test_ssh_files_are_sensitive(self):
+        """Files in `.ssh/` should be detected as sensitive."""
+        assert is_sensitive_file("/home/user/.ssh/id_rsa") is True
+        assert is_sensitive_file("/home/user/.ssh/config") is True
+        assert is_sensitive_file(".ssh/known_hosts") is True
+
+    def test_credentials_files_are_sensitive(self):
+        """Credential files should be detected as sensitive."""
+        assert is_sensitive_file("credentials.json") is True
+        assert is_sensitive_file("/path/credentials.yaml") is True
+        assert is_sensitive_file("credentials.yml") is True
+        assert is_sensitive_file("credentials") is True
+
+    def test_aws_files_are_sensitive(self):
+        """`.aws/` files should be detected as sensitive."""
+        assert is_sensitive_file("/home/user/.aws/credentials") is True
+        assert is_sensitive_file(".aws/config") is True
+
+    def test_netrc_is_sensitive(self):
+        """`.netrc` should be detected as sensitive."""
+        assert is_sensitive_file("/home/user/.netrc") is True
+        assert is_sensitive_file(".netrc") is True
+
+    def test_npmrc_is_sensitive(self):
+        """`.npmrc` should be detected as sensitive."""
+        assert is_sensitive_file(".npmrc") is True
+        assert is_sensitive_file("/home/user/.npmrc") is True
+
+    def test_pypirc_is_sensitive(self):
+        """`.pypirc` should be detected as sensitive."""
+        assert is_sensitive_file(".pypirc") is True
+
+    def test_git_credentials_is_sensitive(self):
+        """`.git-credentials` should be detected as sensitive."""
+        assert is_sensitive_file(".git-credentials") is True
+        assert is_sensitive_file("/home/user/.git-credentials") is True
+
+    def test_secret_files_are_sensitive(self):
+        """Files named secret/secrets should be detected as sensitive."""
+        assert is_sensitive_file("secret.json") is True
+        assert is_sensitive_file("secrets.yaml") is True
+        assert is_sensitive_file("/path/to/secrets.txt") is True
+
+    def test_token_files_are_sensitive(self):
+        """Files named token/tokens should be detected as sensitive."""
+        assert is_sensitive_file("token.json") is True
+        assert is_sensitive_file("tokens.yaml") is True
+
+    def test_normal_files_are_not_sensitive(self):
+        """Normal files should not be flagged as sensitive."""
+        assert is_sensitive_file("data.csv") is False
+        assert is_sensitive_file("/home/user/project/main.py") is False
+        assert is_sensitive_file("README.md") is False
+        assert is_sensitive_file("/tmp/report.pdf") is False
+        assert is_sensitive_file("config.py") is False
+        assert is_sensitive_file("environment.yml") is False
+
+    def test_docker_config_is_sensitive(self):
+        """Docker config.json should be detected as sensitive."""
+        assert is_sensitive_file("/home/user/.docker/config.json") is True
+
+    def test_gnupg_files_are_sensitive(self):
+        """`.gnupg/` files should be detected as sensitive."""
+        assert is_sensitive_file("/home/user/.gnupg/pubring.gpg") is True
+
+    def test_ssh_key_files_are_sensitive(self):
+        """SSH key files by name should be detected as sensitive."""
+        assert is_sensitive_file("id_rsa") is True
+        assert is_sensitive_file("id_ed25519") is True
+        assert is_sensitive_file("id_ecdsa") is True
+        assert is_sensitive_file("id_rsa.pub") is True

@@ -252,6 +252,88 @@ result = list_dir(session_id=session_id)
 result = list_dir(session_id=session_id, path="images")
 ```
 
+### upload_file_path
+
+Upload a file from the host filesystem to the session directory by providing its absolute path. The file is streamed in 8 MB chunks, making it suitable for large files. Security restrictions apply -- only files within allowed directories are permitted, and sensitive files (`.env`, `.ssh/`, credentials, etc.) are blocked.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `host_path` (string, required): Absolute path to the file on the host filesystem
+- `destination_path` (string, required): Relative path within session directory
+- `overwrite` (boolean, optional): Whether to overwrite an existing file (default: `true`)
+
+**Returns:**
+A dictionary containing:
+- `status` (string): `"success"` if the upload succeeded
+- `sandbox_path` (string): Absolute path inside the sandbox
+- `size` (string): File size in bytes
+
+**Example usage:**
+```python
+result = upload_file_path(
+    session_id=session_id,
+    host_path="/home/user/data/dataset.csv",
+    destination_path="data/dataset.csv",
+    overwrite=False
+)
+```
+
+### get_sandbox_path
+
+Get the absolute sandbox path and metadata for a file in the session directory without transferring its content. Use this instead of `download_file` when you only need the file path for referencing in code, or when the file is too large to include in context.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `file_path` (string, required): Relative path within session directory
+
+**Returns:**
+A dictionary containing:
+- `sandbox_path` (string): Absolute path inside the sandbox
+- `size` (string): File size in bytes
+- `last_modified` (string): Last modified timestamp (Unix epoch)
+
+**Example usage:**
+```python
+result = get_sandbox_path(session_id=session_id, file_path="data/dataset.csv")
+# Use the sandbox_path in subsequent code execution
+execute_code(
+    code=f"import pandas as pd; df = pd.read_csv('{result['sandbox_path']}')",
+    session_id=session_id
+)
+```
+
+## Path Security Configuration
+
+The `upload_file_path` tool restricts which host filesystem paths can be uploaded for security. By default, only files within the current working directory are allowed.
+
+### ALLOWED_UPLOAD_DIRS
+
+Set the `ALLOWED_UPLOAD_DIRS` environment variable to a colon-separated list of absolute directory paths to control which directories are permitted:
+
+```bash
+# Allow uploads from multiple directories
+ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
+
+# Allow uploads from a single directory
+ALLOWED_UPLOAD_DIRS=/home/user/projects
+```
+
+When unset, defaults to the current working directory of the MCP server process.
+
+### Sensitive File Protection
+
+Regardless of allowed directories, the following file patterns are always blocked:
+- `.env` files (e.g., `.env`, `.env.local`)
+- SSH keys and configuration (`.ssh/`)
+- GPG keys (`.gnupg/`)
+- AWS credentials (`.aws/`)
+- Docker credentials (`.docker/config.json`)
+- Generic credential files (`credentials.json`, `credentials.yaml`)
+- Netrc files (`.netrc`)
+- NPM/PyPI tokens (`.npmrc`, `.pypirc`)
+- Secret/token files (`secret.json`, `tokens.yaml`, etc.)
+- Git credentials (`.git-credentials`)
+
 ## Development
 
 ### Installing Development Dependencies

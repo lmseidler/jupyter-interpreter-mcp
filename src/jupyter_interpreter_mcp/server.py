@@ -420,15 +420,28 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
 @mcp.tool(
     "upload_file",
     description=(
-        "Uploads a file to the session directory. Requires a valid session_id. "
-        "Files are stored within the session's isolated directory. Supports both "
-        "text and binary content (binary should be base64-encoded)."
+        "Uploads a file to the session directory by providing its content directly. "
+        "Requires a valid session_id. Supports both text and binary content "
+        "(binary should be base64-encoded). "
+        "NOTE: Files must be uploaded to the sandbox before they can be accessed by "
+        "code running in the interpreter -- the sandbox is an isolated environment "
+        "and cannot access files on your host filesystem. "
+        "For large local files, prefer upload_file_path which streams the file "
+        "from a host path without requiring the content in the request."
     ),
 )
 async def upload_file(
     session_id: str, content: str, destination_path: str, is_binary: bool = False
 ) -> dict[str, str]:
     """Uploads a file to the session directory.
+
+    Writes the provided content to the sandbox session directory.  The sandbox
+    is an isolated environment -- files must be uploaded before code in the
+    interpreter can access them.
+
+    For large local files on the host filesystem, prefer
+    :func:`upload_file_path` which streams the file by path without requiring
+    the content in the request payload.
 
     :param session_id: Valid session identifier.
     :type session_id: str
@@ -500,12 +513,21 @@ print(f"File written successfully to {{destination}}")
 @mcp.tool(
     "download_file",
     description=(
-        "Downloads a file from the session directory. Requires a valid session_id. "
-        "Returns file content as text or base64-encoded binary depending on file type."
+        "Downloads a file from the session directory and returns its full content. "
+        "Requires a valid session_id. Returns file content as text or "
+        "base64-encoded binary depending on file type. "
+        "For large files or when you only need the path to reference the file in "
+        "code, prefer get_sandbox_path which returns the sandbox path and metadata "
+        "without transferring content."
     ),
 )
 async def download_file(session_id: str, path: str) -> dict[str, str]:
     """Downloads a file from the session directory.
+
+    Returns the full content of a file from the sandbox.  For large files
+    or when you only need to reference the file in subsequent code
+    execution, prefer :func:`get_sandbox_path` which returns the path and
+    metadata without transferring the file content.
 
     :param session_id: Valid session identifier.
     :type session_id: str
@@ -596,6 +618,273 @@ else:
         return {"error": str(e)}
     except Exception as e:
         return {"error": f"Download failed: {str(e)}"}
+
+
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
+
+
+@mcp.tool(
+    "upload_file_path",
+    description=(
+        "Uploads a file from the host filesystem to the session directory using "
+        "a local absolute path. Streams the file in 8 MB chunks, making it "
+        "suitable for large files. Requires a valid session_id. "
+        "The host_path must be an absolute path within the allowed upload "
+        "directories. Sensitive files (.env, .ssh/, credentials, etc.) are "
+        "blocked. Set overwrite=False to prevent overwriting existing files. "
+        "NOTE: The sandbox is an isolated environment -- this tool bridges the "
+        "host filesystem to the sandbox so code can access the file."
+    ),
+)
+async def upload_file_path(
+    session_id: str,
+    host_path: str,
+    destination_path: str,
+    overwrite: bool = True,
+) -> dict[str, str]:
+    """Upload a file from the host filesystem to the sandbox by path.
+
+    Reads the file at *host_path* on the host, validates security
+    constraints, and streams the content to the sandbox session directory
+    at *destination_path* using chunked writes.
+
+    :param session_id: Valid session identifier.
+    :type session_id: str
+    :param host_path: Absolute path to the file on the host filesystem.
+        Must reside within the allowed upload directories (configured via
+        the ``ALLOWED_UPLOAD_DIRS`` environment variable).
+    :type host_path: str
+    :param destination_path: Destination path relative to the session
+        directory inside the sandbox.
+    :type destination_path: str
+    :param overwrite: If ``True`` (default), overwrite an existing file at
+        the destination.  If ``False``, return an error when the
+        destination already exists.
+    :type overwrite: bool
+    :return: Dictionary with ``sandbox_path`` on success or ``error`` key.
+    :rtype: dict[str, str]
+    """
+    import base64
+
+    from jupyter_interpreter_mcp.session import (
+        is_sensitive_file,
+        validate_host_path,
+        validate_path,
+    )
+
+    global sessions, notebooks
+
+    try:
+        # Validate session
+        session = validate_session(session_id)
+        notebook = notebooks[session_id]
+
+        # 3.1 Validate host_path is absolute (done inside validate_host_path)
+        # 3.2 Security: check host_path against allowed directories
+        resolved_host = validate_host_path(host_path)
+
+        # 3.3 Security: check against sensitive file patterns
+        if is_sensitive_file(resolved_host):
+            return {
+                "error": (
+                    f"Upload blocked: '{os.path.basename(host_path)}' matches a "
+                    "sensitive file pattern"
+                )
+            }
+
+        # 3.4 File existence check
+        if not os.path.exists(resolved_host):
+            return {"error": f"Host file not found: {host_path}"}
+
+        if not os.path.isfile(resolved_host):
+            return {"error": f"Host path is not a file: {host_path}"}
+
+        # 3.5 Permission check
+        if not os.access(resolved_host, os.R_OK):
+            return {"error": f"Permission denied: cannot read {host_path}"}
+
+        # 3.6 Validate destination path within session directory
+        validated_dest = validate_path(session.directory, destination_path)
+
+        # 3.7 Overwrite protection
+        if not overwrite:
+            check_code = f"""
+import os
+print("EXISTS" if os.path.exists({repr(validated_dest)}) else "NOT_EXISTS")
+"""
+            check_result = await notebook.execute_new_code(check_code)
+            if check_result["error"]:
+                return {"error": "; ".join(check_result["error"])}
+            check_output = "".join(check_result["result"]).strip()
+            if "EXISTS" in check_output and "NOT_EXISTS" not in check_output:
+                return {
+                    "error": (
+                        f"Destination already exists: {destination_path} "
+                        "(set overwrite=True to replace)"
+                    )
+                }
+
+        # 3.8 Chunked file streaming
+        # Ensure destination directory exists
+        mkdir_code = f"""
+import os
+os.makedirs(os.path.dirname({repr(validated_dest)}), exist_ok=True)
+print("DIR_READY")
+"""
+        mkdir_result = await notebook.execute_new_code(mkdir_code)
+        if mkdir_result["error"]:
+            return {"error": "; ".join(mkdir_result["error"])}
+
+        # Stream the file in chunks
+        file_size = os.path.getsize(resolved_host)
+        bytes_sent = 0
+
+        with open(resolved_host, "rb") as f:
+            first_chunk = True
+            while True:
+                chunk = f.read(UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+
+                chunk_b64 = base64.b64encode(chunk).decode("ascii")
+                mode = "wb" if first_chunk else "ab"
+
+                write_code = f"""
+import base64
+chunk_data = base64.b64decode({repr(chunk_b64)})
+with open({repr(validated_dest)}, {repr(mode)}) as f:
+    f.write(chunk_data)
+print(f"Wrote {{len(chunk_data)}} bytes")
+"""
+                write_result = await notebook.execute_new_code(write_code)
+                if write_result["error"]:
+                    return {
+                        "error": (
+                            f"Upload failed during streaming: "
+                            f"{'; '.join(write_result['error'])}"
+                        )
+                    }
+
+                bytes_sent += len(chunk)
+                first_chunk = False
+
+        # Update last access
+        session.touch()
+        await remote_client.update_session_metadata(
+            session.kernel_id, session.directory, session.last_access
+        )
+
+        # 3.9 Return success with sandbox_path label
+        return {
+            "status": "success",
+            "sandbox_path": validated_dest,
+            "size": str(file_size),
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Upload by path failed: {str(e)}"}
+
+
+@mcp.tool(
+    "get_sandbox_path",
+    description=(
+        "Returns the absolute sandbox path and metadata for a file in the session "
+        "directory without transferring its content. Requires a valid session_id. "
+        "Use this tool instead of download_file when you only need the file's "
+        "path for referencing in code, or when the file is too large to include "
+        "in context. Returns sandbox_path, size (bytes), and last_modified "
+        "timestamp."
+    ),
+)
+async def get_sandbox_path(session_id: str, file_path: str) -> dict[str, str]:
+    """Get the sandbox absolute path and metadata for a file.
+
+    Validates that the file exists within the session directory and
+    returns its absolute sandbox path along with file metadata (size in
+    bytes and last-modified timestamp) without reading the file content.
+
+    :param session_id: Valid session identifier.
+    :type session_id: str
+    :param file_path: File path relative to the session directory.
+    :type file_path: str
+    :return: Dictionary with ``sandbox_path``, ``size``, and
+        ``last_modified`` on success, or ``error`` key.
+    :rtype: dict[str, str]
+    """
+    from jupyter_interpreter_mcp.session import validate_path
+
+    global sessions, notebooks
+
+    try:
+        # 4.1 Validate session and the requested file_path
+        session = validate_session(session_id)
+        notebook = notebooks[session_id]
+
+        # 4.2 Path validation: ensure file is within session directory
+        validated_path = validate_path(session.directory, file_path)
+
+        # 4.3 File existence check + 4.4 metadata retrieval via kernel
+        code = f"""
+import os
+import json
+
+file_path = {repr(validated_path)}
+if not os.path.exists(file_path):
+    print("FILE_NOT_FOUND")
+elif not os.path.isfile(file_path):
+    print("NOT_A_FILE")
+else:
+    stat = os.stat(file_path)
+    info = {{
+        "sandbox_path": file_path,
+        "size": stat.st_size,
+        "last_modified": stat.st_mtime
+    }}
+    print("METADATA_START")
+    print(json.dumps(info))
+    print("METADATA_END")
+"""
+        result = await notebook.execute_new_code(code)
+
+        if result["error"]:
+            return {"error": "; ".join(result["error"])}
+
+        output = "".join(result["result"])
+
+        if "FILE_NOT_FOUND" in output:
+            return {"error": f"File not found in sandbox: {file_path}"}
+        if "NOT_A_FILE" in output:
+            return {"error": f"Path is not a file: {file_path}"}
+
+        # Parse metadata
+        if "METADATA_START" in output and "METADATA_END" in output:
+            import json
+
+            start_idx = output.index("METADATA_START") + len("METADATA_START")
+            end_idx = output.index("METADATA_END")
+            metadata_json = output[start_idx:end_idx].strip()
+            metadata = json.loads(metadata_json)
+
+            # Update last access
+            session.touch()
+            await remote_client.update_session_metadata(
+                session.kernel_id, session.directory, session.last_access
+            )
+
+            # 4.5 + 4.6 Return sandbox_path and metadata
+            return {
+                "sandbox_path": metadata["sandbox_path"],
+                "size": str(metadata["size"]),
+                "last_modified": str(metadata["last_modified"]),
+            }
+        else:
+            return {"error": "Failed to retrieve file metadata"}
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Get sandbox path failed: {str(e)}"}
 
 
 @mcp.tool(
