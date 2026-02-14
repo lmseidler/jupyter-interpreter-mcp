@@ -24,9 +24,9 @@ class TestNotebookInit:
     async def test_init_success(self, mock_remote_client):
         """Test successful notebook initialization."""
         notebook = Notebook(
-            session_id=42,
+            session_id="test-session-123",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-123",
         )
         await notebook.connect()
 
@@ -35,8 +35,10 @@ class TestNotebookInit:
         assert notebook.kernel_id == "kernel-123"
 
         # Verify attributes
-        assert notebook.session_id == 42
-        assert notebook.file_path == "/home/jovyan/notebooks/42.txt"
+        assert notebook.session_id == "test-session-123"
+        assert (
+            notebook.file_path == "/home/jovyan/sessions/test-session-123/history.txt"
+        )
         assert notebook.history == []
 
 
@@ -47,9 +49,9 @@ class TestExecuteNewCode:
     async def test_execute_new_code_success(self, mock_remote_client):
         """Test successful code execution."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -75,9 +77,9 @@ class TestExecuteNewCode:
     async def test_execute_new_code_with_result(self, mock_remote_client):
         """Test code execution with execute_result."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -97,9 +99,9 @@ class TestExecuteNewCode:
     async def test_execute_new_code_with_error(self, mock_remote_client):
         """Test code execution with error."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -124,9 +126,9 @@ class TestDumpToFile:
     async def test_dump_to_file(self, mock_remote_client):
         """Test dumping history to remote file."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -149,9 +151,9 @@ class TestDumpToFile:
     async def test_dump_to_file_empty_history(self, mock_remote_client):
         """Test dumping empty history to file."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -169,9 +171,9 @@ class TestLoadFromFile:
     async def test_load_from_file_success(self, mock_remote_client):
         """Test successfully loading history from file."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -197,14 +199,16 @@ class TestLoadFromFile:
         assert result is True
         # Should call execute twice: once to read, once to restore
         assert mock_remote_client.execute.call_count == 2
+        # Restored history should contain only restored user code
+        assert notebook.history == ["x = 10"]
 
     @pytest.mark.asyncio
     async def test_load_from_file_not_found(self, mock_remote_client):
         """Test loading from non-existent file."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -216,15 +220,16 @@ class TestLoadFromFile:
 
         result = await notebook.load_from_file()
 
-        assert result is False
+        assert result is True
+        assert notebook.history == []
 
     @pytest.mark.asyncio
     async def test_load_from_file_with_error(self, mock_remote_client):
         """Test loading from file with execution error."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -242,9 +247,9 @@ class TestLoadFromFile:
     async def test_load_from_file_exception(self, mock_remote_client):
         """Test loading from file with exception."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 
@@ -263,9 +268,9 @@ class TestClose:
     async def test_close(self, mock_remote_client):
         """Test closing notebook shuts down kernel."""
         notebook = Notebook(
-            session_id=1,
+            session_id="test-session-1",
             remote_client=mock_remote_client,
-            notebooks_folder="/home/jovyan/notebooks",
+            session_directory="/home/jovyan/sessions/test-session-1",
         )
         await notebook.connect()
 

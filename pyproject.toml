@@ -85,4 +85,7 @@ namespace_packages = true
 testpaths = ["test"]
 python_files = ["test_*.py"]
 addopts = "-v --cov=jupyter_interpreter_mcp --cov-report=term-missing"
+markers = [
+    "integration: requires real Jupyter server",
+]
 asyncio_mode = "auto"
