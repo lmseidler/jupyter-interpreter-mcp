@@ -122,16 +122,12 @@ Creates a new isolated session with a dedicated directory and Jupyter kernel.
 **Returns:**
 A dictionary containing:
 - `session_id` (string): UUID identifier for the session
-- `message` (string): Confirmation message
-- `directory` (string): Path to the session directory
 
 **Example usage:**
 ```python
 result = create_session()
 # Returns: {
-#   "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-#   "message": "Session created successfully",
-#   "directory": "/home/jovyan/sessions/a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+#   "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 # }
 ```
 
@@ -175,13 +171,12 @@ Upload a file to the session directory. Automatically detects binary vs text con
 - `session_id` (string, required): The session ID
 - `destination_path` (string, required): Relative path within session directory (supports subdirectories)
 - `content` (string, required): File content (base64-encoded for binary, plain text otherwise)
-- `encoding` (string, required): Either "base64" or "text"
+- `is_binary` (boolean, optional): Whether the content is base64-encoded binary (default: `false`)
 
 **Returns:**
 A dictionary containing:
-- `success` (boolean): Whether the upload succeeded
-- `path` (string): Absolute path where file was written
-- `message` (string): Confirmation message
+- `status` (string): `"success"` if the upload succeeded
+- `path` (string): Relative path where file was written
 
 **Example usage:**
 ```python
@@ -190,7 +185,7 @@ upload_file(
     session_id=session_id,
     destination_path="script.py",
     content="print('Hello, World!')",
-    encoding="text"
+    is_binary=False
 )
 
 # Upload binary file (e.g., image)
@@ -201,7 +196,7 @@ upload_file(
     session_id=session_id,
     destination_path="images/logo.png",
     content=content,
-    encoding="base64"
+    is_binary=True
 )
 ```
 
@@ -216,18 +211,18 @@ Download a file from the session directory.
 **Returns:**
 A dictionary containing:
 - `content` (string): File content (base64-encoded for binary, plain text otherwise)
-- `encoding` (string): Either "base64" or "text"
-- `path` (string): The requested path
+- `encoding` (string): Either `"base64"` or `"text"`
+- `filename` (string): The basename of the downloaded file
 
 **Example usage:**
 ```python
 # Download text file
 result = download_file(session_id=session_id, path="script.py")
-# Returns: {"content": "print('Hello, World!')", "encoding": "text", "path": "script.py"}
+# Returns: {"content": "print('Hello, World!')", "encoding": "text", "filename": "script.py"}
 
 # Download binary file
 result = download_file(session_id=session_id, path="images/logo.png")
-# Returns: {"content": "iVBORw0KGgo...", "encoding": "base64", "path": "images/logo.png"}
+# Returns: {"content": "iVBORw0KGgo...", "encoding": "base64", "filename": "logo.png"}
 ```
 
 ### list_dir
@@ -240,8 +235,8 @@ List files and directories within the session directory.
 
 **Returns:**
 A dictionary containing:
-- `files` (list): List of files with names, types, sizes
-- `current_directory` (string): The directory that was listed
+- `error` (string): Empty string on success, error message on failure
+- `result` (list of strings): Formatted file/directory listing
 
 **Example usage:**
 ```python

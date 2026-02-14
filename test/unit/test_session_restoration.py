@@ -78,10 +78,12 @@ async def test_session_restoration_does_not_duplicate_history(mock_remote_client
     # Verify restoration succeeded
     assert result is True
 
-    # CRITICAL: History should still be empty because load_from_file
-    # executes code directly via remote_client.execute, not execute_new_code
-    # The bug was that it used execute_new_code which added to history
-    assert len(notebook2.history) == 1  # Only the file read code
+    # CRITICAL: History should contain exactly the restored file content
+    # (one entry). load_from_file executes code directly via
+    # remote_client.execute, not execute_new_code, so it must not *duplicate*
+    # the restored content in history. The bug was that it used
+    # execute_new_code, which added an extra history entry on restoration.
+    assert len(notebook2.history) == 1  # Only the restored file content
 
     # Now execute new code after restoration
     mock_remote_client.execute.side_effect = None

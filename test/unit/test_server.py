@@ -350,7 +350,6 @@ class TestListDirTool:
     """
 
     @pytest.mark.skip(reason="Obsolete after session-based refactor")
-    @pytest.mark.skip(reason="Obsolete after session-based refactor")
     @pytest.mark.asyncio
     async def test_list_dir_success(self):
         """Test successful directory listing."""

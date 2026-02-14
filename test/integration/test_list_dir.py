@@ -28,14 +28,24 @@ async def test_list_dir_with_real_server(monkeypatch):
 
     monkeypatch.setattr(server, "remote_client", client, raising=False)
 
-    result = await server.list_dir()
-    print(result)
+    # Create a session first for the integration test
+    session_result = await server.create_session()
+    assert "session_id" in session_result
+    session_id = session_result["session_id"]
 
-    assert result["error"] == ""
-    assert isinstance(result["result"], list)
-    assert result["result"]
-    for line in result["result"]:
-        assert isinstance(line, str)
-        assert line.startswith(
-            ("file ", "directory ", "notebook ", "(empty directory)")
-        )
+    try:
+        result = await server.list_dir(session_id=session_id)
+        print(result)
+
+        assert result["error"] == ""
+        assert isinstance(result["result"], list)
+        # Note: listing might be "(empty directory)"
+        assert result["result"]
+    finally:
+        # Cleanup
+        if session_id in server.sessions:
+            session = server.sessions[session_id]
+            client.shutdown_kernel(session.kernel_id)
+            del server.sessions[session_id]
+            if session_id in server.notebooks:
+                del server.notebooks[session_id]

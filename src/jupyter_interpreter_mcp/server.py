@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 import time
@@ -28,33 +29,38 @@ executed code, if you pass in your session_id. It is crucial to provide your
 session_id for that to work.
 
 Supports both Python code and bash commands (e.g., 'ls', 'pwd', 'cat file.txt').
-Bash commands are executed directly without needing shell wrappers like !ls.
-You can also use shell commands to install packages.
-
-Additionally, you can use the list_dir tool to explore the working directory and
-see what files are available without executing code.
-    """,
+""",
 )
+
 # Session registry: session_id -> Session object
 sessions: dict[str, Session] = {}
 # Notebook registry: session_id -> Notebook object
 notebooks: dict[str, Notebook] = {}
 
+# Locks for thread-safe access to registries
+registry_lock = asyncio.Lock()
 
-def validate_session(session_id: str) -> Session:
-    """Validate that a session exists and return it.
 
-    :param session_id: Session ID to validate.
-    :type session_id: str
-    :return: Session object.
-    :rtype: Session
-    :raises ValueError: If session doesn't exist.
+async def get_session_and_notebook(session_id: str) -> tuple[Session, Notebook]:
+    """Retrieve session and notebook objects while holding the registry lock.
+
+    :param session_id: Unique identifier for the session.
+    :return: A tuple of (Session, Notebook).
+    :raises ValueError: If the session is not found or is expired.
     """
-    if session_id not in sessions:
-        raise ValueError(f"Session '{session_id}' not found")
-    if session_id not in notebooks:
-        raise ValueError(f"Session '{session_id}' has no notebook (data inconsistency)")
-    return sessions[session_id]
+    async with registry_lock:
+        if session_id not in sessions:
+            raise ValueError(f"Session {session_id} not found")
+
+        session = sessions[session_id]
+        if session.is_expired(session_ttl):
+            raise ValueError(f"Session {session_id} has expired")
+
+        notebook = notebooks.get(session_id)
+        if not notebook:
+            raise ValueError(f"Notebook for session {session_id} not found")
+
+        return session, notebook
 
 
 async def cleanup_expired_sessions() -> int:
@@ -68,36 +74,34 @@ async def cleanup_expired_sessions() -> int:
     if session_ttl <= 0:
         return 0  # No cleanup if TTL is disabled
 
-    expired_ids = [
-        sid for sid, session in sessions.items() if session.is_expired(session_ttl)
-    ]
+    async with registry_lock:
+        expired_ids = [
+            sid for sid, session in sessions.items() if session.is_expired(session_ttl)
+        ]
 
-    for session_id in expired_ids:
-        try:
-            session = sessions[session_id]
-
-            # Shutdown kernel
+        for session_id in expired_ids:
             try:
-                remote_client.shutdown_kernel(session.kernel_id)
+                session = sessions[session_id]
+
+                # Shutdown kernel
+                try:
+                    remote_client.shutdown_kernel(session.kernel_id)
+                except Exception as e:
+                    print(
+                        f"Warning: Failed to shutdown kernel for session "
+                        f"{session_id}: {e}",
+                        file=sys.stderr,
+                    )
+
+                # Remove from registries
+                sessions.pop(session_id, None)
+                notebooks.pop(session_id, None)
+
+                print(f"Cleaned up expired session: {session_id}")
             except Exception as e:
-                print(
-                    f"Warning: Failed to shutdown kernel for session {session_id}: {e}",
-                    file=sys.stderr,
-                )
+                print(f"Error cleaning up session {session_id}: {e}", file=sys.stderr)
 
-            # Delete session directory via kernel (if kernel still responsive)
-            # Or just leave it - cleanup can be manual
-            # For now, just remove from memory
-
-            # Remove from registries
-            sessions.pop(session_id, None)
-            notebooks.pop(session_id, None)
-
-            print(f"Cleaned up expired session: {session_id}")
-        except Exception as e:
-            print(f"Error cleaning up session {session_id}: {e}", file=sys.stderr)
-
-    return len(expired_ids)
+        return len(expired_ids)
 
 
 async def restore_sessions_from_disk(target_session_id: str | None = None) -> int:
@@ -157,35 +161,32 @@ print("SESSION_LIST_START")
 print(json.dumps(result))
 print("SESSION_LIST_END")
 """
-
-        list_result = await remote_client.execute(temp_kernel_id, list_code)
-
-        if list_result["error"]:
+        result = await remote_client.execute(temp_kernel_id, list_code)
+        if result["error"]:
             print(
-                f"Error listing sessions: {'; '.join(list_result['error'])}",
-                file=sys.stderr,
+                f"Error listing sessions: {'; '.join(result['error'])}", file=sys.stderr
             )
             return 0
 
-        output = "".join(list_result["result"])
-
-        # Parse session list
+        output = "".join(result["result"])
         if "SESSION_LIST_START" not in output or "SESSION_LIST_END" not in output:
-            print("Could not parse session list", file=sys.stderr)
             return 0
 
         start_idx = output.index("SESSION_LIST_START") + len("SESSION_LIST_START")
         end_idx = output.index("SESSION_LIST_END")
-        session_list_json = output[start_idx:end_idx].strip()
+        sessions_json = output[start_idx:end_idx].strip()
+        sessions_to_restore = json.loads(sessions_json)
 
-        session_list = json.loads(session_list_json)
+        for meta in sessions_to_restore:
+            session_id = meta["session_id"]
+            created_at = meta["created_at"]
+            last_access = meta["last_access"]
+            session_directory = meta["directory"]
 
-        # Restore each session
-        for session_info in session_list:
-            session_id = session_info["session_id"]
-            created_at = session_info["created_at"]
-            last_access = session_info["last_access"]
-            session_directory = session_info["directory"]
+            # Double-checked locking to prevent duplicate restoration
+            async with registry_lock:
+                if session_id in sessions:
+                    continue
 
             if created_at is None or last_access is None:
                 print(f"Skipping {session_id}: invalid metadata")
@@ -199,20 +200,16 @@ print("SESSION_LIST_END")
                     continue
 
             try:
-                # Create new kernel for this session
+                # Create kernel for restored session
                 kernel_id = remote_client.create_kernel()
 
-                # Change to session directory
-                chdir_code = f"""
-import os
-os.chdir({repr(session_directory)})
-print(f"Restored session working directory: {{os.getcwd()}}")
-"""
+                # Change working directory
+                chdir_code = f"import os\nos.chdir({repr(session_directory)})"
                 chdir_result = await remote_client.execute(kernel_id, chdir_code)
                 if chdir_result["error"]:
                     print(
                         f"Warning: Failed to set working directory for {session_id}: "
-                        "{'; '.join(chdir_result['error'])}",
+                        f"{'; '.join(chdir_result['error'])}",
                         file=sys.stderr,
                     )
                     remote_client.shutdown_kernel(kernel_id)
@@ -226,12 +223,10 @@ print(f"Restored session working directory: {{os.getcwd()}}")
                     last_access=last_access,
                     directory=session_directory,
                 )
-                sessions[session_id] = session
 
                 # Create notebook object
                 notebook = Notebook(session_id, remote_client, session_directory)
                 notebook.kernel_id = kernel_id
-                notebooks[session_id] = notebook
 
                 # Restore execution history
                 history_restored = await notebook.load_from_file()
@@ -241,12 +236,18 @@ print(f"Restored session working directory: {{os.getcwd()}}")
                         file=sys.stderr,
                     )
                     remote_client.shutdown_kernel(kernel_id)
-                    sessions.pop(session_id, None)
-                    notebooks.pop(session_id, None)
                     continue
 
-                print(f"Restored session: {session_id}")
-                restored_count += 1
+                async with registry_lock:
+                    # Check again inside the lock before committing
+                    if session_id not in sessions:
+                        sessions[session_id] = session
+                        notebooks[session_id] = notebook
+                        print(f"Restored session: {session_id}")
+                        restored_count += 1
+                    else:
+                        print(f"Session {session_id} already restored by another task")
+                        remote_client.shutdown_kernel(kernel_id)
 
             except Exception as e:
                 print(f"Error restoring session {session_id}: {e}", file=sys.stderr)
@@ -271,10 +272,15 @@ async def ensure_session_available(session_id: str) -> bool:
     :return: True if the session is available in memory, False otherwise.
     :rtype: bool
     """
-    if session_id in sessions and session_id in notebooks:
-        return True
+    async with registry_lock:
+        if session_id in sessions and session_id in notebooks:
+            return True
+
+    # restore_sessions_from_disk has its own double-checked locking
     restored = await restore_sessions_from_disk(session_id)
-    return restored > 0 and session_id in sessions and session_id in notebooks
+
+    async with registry_lock:
+        return restored > 0 and session_id in sessions and session_id in notebooks
 
 
 @mcp.tool(
@@ -330,12 +336,14 @@ print(f"Working directory: {{os.getcwd()}}")
             last_access=current_time,
             directory=session_directory,
         )
-        sessions[session_id] = session
 
         # Create notebook object
         notebook = Notebook(session_id, remote_client, session_directory)
         notebook.kernel_id = kernel_id
-        notebooks[session_id] = notebook
+
+        async with registry_lock:
+            sessions[session_id] = session
+            notebooks[session_id] = notebook
 
         return {"session_id": session_id}
     except Exception as e:
@@ -378,9 +386,8 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
         # Restore from disk if not already loaded in memory
         await ensure_session_available(session_id)
 
-        # Validate session exists
-        session = validate_session(session_id)
-        notebook = notebooks[session_id]
+        # Validate session and get objects under lock
+        session, notebook = await get_session_and_notebook(session_id)
 
         # Execute code
         result: dict[str, list[str]] = await notebook.execute_new_code(code)
@@ -459,9 +466,11 @@ async def upload_file(
     global sessions, notebooks
 
     try:
-        # Validate session
-        session = validate_session(session_id)
-        notebook = notebooks[session_id]
+        # Restore from disk if not already loaded in memory
+        await ensure_session_available(session_id)
+
+        # Validate session and get objects under lock
+        session, notebook = await get_session_and_notebook(session_id)
 
         # Validate path
         validated_path = validate_path(session.directory, destination_path)
@@ -488,7 +497,7 @@ with open(destination, 'w') as f:
 """
 
         code += """
-print(f"File written successfully to {{destination}}")
+print(f"File written successfully to {destination}")
 """
 
         # Execute upload
@@ -543,9 +552,11 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
     global sessions, notebooks
 
     try:
-        # Validate session
-        session = validate_session(session_id)
-        notebook = notebooks[session_id]
+        # Restore from disk if not already loaded in memory
+        await ensure_session_available(session_id)
+
+        # Validate session and get objects under lock
+        session, notebook = await get_session_and_notebook(session_id)
 
         # Validate path
         validated_path = validate_path(session.directory, path)
@@ -675,9 +686,11 @@ async def upload_file_path(
     global sessions, notebooks
 
     try:
-        # Validate session
-        session = validate_session(session_id)
-        notebook = notebooks[session_id]
+        # Restore from disk if not already loaded in memory
+        await ensure_session_available(session_id)
+
+        # Validate session and get objects under lock
+        session, notebook = await get_session_and_notebook(session_id)
 
         # 3.1 Validate host_path is absolute (done inside validate_host_path)
         # 3.2 Security: check host_path against allowed directories
@@ -817,9 +830,11 @@ async def get_sandbox_path(session_id: str, file_path: str) -> dict[str, str]:
     global sessions, notebooks
 
     try:
-        # 4.1 Validate session and the requested file_path
-        session = validate_session(session_id)
-        notebook = notebooks[session_id]
+        # Restore from disk if not already loaded in memory
+        await ensure_session_available(session_id)
+
+        # 4.1 Validate session and get objects under lock
+        session, notebook = await get_session_and_notebook(session_id)
 
         # 4.2 Path validation: ensure file is within session directory
         validated_path = validate_path(session.directory, file_path)
@@ -909,9 +924,11 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
     global sessions, notebooks
 
     try:
-        # Validate session
-        session = validate_session(session_id)
-        notebook = notebooks[session_id]
+        # Restore from disk if not already loaded in memory
+        await ensure_session_available(session_id)
+
+        # Validate session and get objects under lock
+        session, notebook = await get_session_and_notebook(session_id)
 
         # Validate path
         if path:
