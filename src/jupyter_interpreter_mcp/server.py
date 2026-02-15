@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import json
 import os
 import sys
 import time
@@ -117,8 +118,6 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
     :return: Number of sessions restored.
     :rtype: int
     """
-    import json
-
     global sessions, notebooks, remote_client, sessions_dir, session_ttl
 
     # Create a temporary kernel to list session directories
@@ -738,6 +737,8 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
         code = f"""
 import os
 import json
+from datetime import datetime
+import stat
 
 dir_path = {repr(validated_path)}
 if not os.path.exists(dir_path):
@@ -748,11 +749,27 @@ else:
     entries = []
     for item in sorted(os.listdir(dir_path)):
         full_path = os.path.join(dir_path, item)
+        try:
+            st = os.lstat(full_path)
+        except OSError:
+            continue
+
+        mode = stat.filemode(st.st_mode)
+        mtime = datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+
+        entry = {{
+            'name': item,
+            'mode': mode,
+            'mtime': mtime
+        }}
+
         if os.path.isdir(full_path):
-            entries.append({{'type': 'directory', 'name': item}})
+            entry['type'] = 'directory'
         else:
-            size = os.path.getsize(full_path)
-            entries.append({{'type': 'file', 'name': item, 'size': size}})
+            entry['type'] = 'file'
+            entry['size'] = st.st_size
+
+        entries.append(entry)
 
     print("DIR_LISTING_START")
     print(json.dumps(entries))
@@ -777,8 +794,6 @@ else:
             end_idx = output.index("DIR_LISTING_END")
             listing_json = output[start_idx:end_idx].strip()
 
-            import json
-
             entries = json.loads(listing_json)
 
             # Format output
@@ -789,8 +804,13 @@ else:
                 for entry in entries:
                     item_type = entry["type"]
                     name = entry["name"]
+                    mode = entry["mode"]
+                    mtime = entry["mtime"]
+
                     if item_type == "directory":
-                        result_lines.append(f"directory {name}")
+                        result_lines.append(
+                            f"{mode}  {mtime}  {'directory':>10}  {name}"
+                        )
                     else:
                         size = entry.get("size", 0)
                         if size < 1024:
@@ -799,7 +819,7 @@ else:
                             size_str = f"{size / 1024:.1f} KB"
                         else:
                             size_str = f"{size / (1024 * 1024):.1f} MB"
-                        result_lines.append(f"file {name} ({size_str})")
+                        result_lines.append(f"{mode}  {mtime}  {size_str:>10}  {name}")
 
             # Update last access
             session.touch()
