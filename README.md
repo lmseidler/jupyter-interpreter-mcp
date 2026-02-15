@@ -106,7 +106,7 @@ The server uses a session-based architecture where each session has:
 
 1. **Create a session** using `create_session`
 2. **Execute code** in the session using `execute_code`
-3. **Upload/download files** within the session directory using `upload_file` and `download_file`
+3. **Upload/download files** within the session directory using `upload_file_path` and `download_file`
 4. **List files** in the session directory using `list_dir`
 
 Sessions automatically expire after the configured TTL (time-to-live) period.
@@ -161,43 +161,6 @@ result = execute_code(code="print(x * 2)", session_id=session_id)
 
 # Bash commands
 result = execute_code(code="ls -la", session_id=session_id)
-```
-
-### upload_file
-
-Upload a file to the session directory. Automatically detects binary vs text content.
-
-**Parameters:**
-- `session_id` (string, required): The session ID
-- `destination_path` (string, required): Relative path within session directory (supports subdirectories)
-- `content` (string, required): File content (base64-encoded for binary, plain text otherwise)
-- `is_binary` (boolean, optional): Whether the content is base64-encoded binary (default: `false`)
-
-**Returns:**
-A dictionary containing:
-- `status` (string): `"success"` if the upload succeeded
-- `path` (string): Relative path where file was written
-
-**Example usage:**
-```python
-# Upload text file
-upload_file(
-    session_id=session_id,
-    destination_path="script.py",
-    content="print('Hello, World!')",
-    is_binary=False
-)
-
-# Upload binary file (e.g., image)
-import base64
-with open("image.png", "rb") as f:
-    content = base64.b64encode(f.read()).decode()
-upload_file(
-    session_id=session_id,
-    destination_path="images/logo.png",
-    content=content,
-    is_binary=True
-)
 ```
 
 ### download_file
@@ -270,30 +233,6 @@ result = upload_file_path(
     host_path="/home/user/data/dataset.csv",
     destination_path="data/dataset.csv",
     overwrite=False
-)
-```
-
-### get_sandbox_path
-
-Get the absolute sandbox path and metadata for a file in the session directory without transferring its content. Use this instead of `download_file` when you only need the file path for referencing in code, or when the file is too large to include in context.
-
-**Parameters:**
-- `session_id` (string, required): The session ID
-- `file_path` (string, required): Relative path within session directory
-
-**Returns:**
-A dictionary containing:
-- `sandbox_path` (string): Absolute path inside the sandbox
-- `size` (string): File size in bytes
-- `last_modified` (string): Last modified timestamp (Unix epoch)
-
-**Example usage:**
-```python
-result = get_sandbox_path(session_id=session_id, file_path="data/dataset.csv")
-# Use the sandbox_path in subsequent code execution
-execute_code(
-    code=f"import pandas as pd; df = pd.read_csv('{result['sandbox_path']}')",
-    session_id=session_id
 )
 ```
 

@@ -288,8 +288,9 @@ async def ensure_session_available(session_id: str) -> bool:
     "create_session",
     description=(
         "Creates a new isolated code execution session. Returns a unique session_id "
-        "that must be used in all subsequent operations (execute_code, upload_file, "
-        "download_file, list_dir). Each session has its own directory and kernel."
+        "that must be used in all subsequent operations (execute_code, "
+        "upload_file_path, download_file, list_dir). Each session has its "
+        "own directory and kernel."
     ),
 )
 async def create_session() -> dict[str, str]:
@@ -426,200 +427,20 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
 
 
 @mcp.tool(
-    "upload_file",
-    description=(
-        "Uploads a file to the session directory by providing its content directly. "
-        "Requires a valid session_id. Supports both text and binary content "
-        "(binary should be base64-encoded). "
-        "NOTE: Files must be uploaded to the sandbox before they can be accessed by "
-        "code running in the interpreter -- the sandbox is an isolated environment "
-        "and cannot access files on your host filesystem. "
-        "For large local files, prefer upload_file_path which streams the file "
-        "from a host path without requiring the content in the request."
-    ),
-)
-async def upload_file(
-    session_id: str, content: str, destination_path: str, is_binary: bool = False
-) -> dict[str, str]:
-    """Uploads a file to the session directory.
-
-    Writes the provided content to the sandbox session directory.  The sandbox
-    is an isolated environment -- files must be uploaded before code in the
-    interpreter can access them.
-
-    For large content (>512 KB), the upload is performed in chunks to avoid
-    WebSocket message size limits and kernel memory issues.
-
-    For large local files on the host filesystem, prefer
-    :func:`upload_file_path` which streams the file by path without requiring
-    the content in the request payload.
-
-    :param session_id: Valid session identifier.
-    :type session_id: str
-    :param content: File content (text or base64-encoded binary).
-    :type content: str
-    :param destination_path: Destination path relative to session directory.
-    :type destination_path: str
-    :param is_binary: Whether content is base64-encoded binary.
-    :type is_binary: bool
-    :return: Dictionary with 'status' or 'error' key.
-    :rtype: dict[str, str]
-    """
-    from jupyter_interpreter_mcp.session import validate_path
-
-    global sessions, notebooks
-
-    try:
-        # Restore from disk if not already loaded in memory
-        await ensure_session_available(session_id)
-
-        # Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
-
-        # Validate path
-        validated_path = validate_path(session.directory, destination_path)
-
-        # Ensure destination directory exists
-        mkdir_code = f"""
-import os
-os.makedirs(os.path.dirname({repr(validated_path)}), exist_ok=True)
-print("DIR_READY")
-"""
-        mkdir_result = await notebook.execute_new_code(mkdir_code)
-        if mkdir_result["error"]:
-            return {"error": "; ".join(mkdir_result["error"])}
-
-        # For binary content, decode first to get raw size
-        content_bytes = None
-        if is_binary:
-            try:
-                content_bytes = base64.b64decode(content)
-            except Exception as e:
-                return {"error": f"Invalid base64 content: {str(e)}"}
-            content_size = len(content_bytes)
-        else:
-            content_size = len(content.encode("utf-8"))
-
-        # Use chunked upload for large content
-        if content_size > UPLOAD_CONTENT_CHUNK_SIZE:
-            # Chunked upload
-            if is_binary:
-                # Binary: work with decoded bytes
-                if content_bytes is None:
-                    return {"error": "Internal error: content_bytes is None"}
-
-                bytes_written = 0
-                first_chunk = True
-
-                while bytes_written < content_size:
-                    chunk = content_bytes[
-                        bytes_written : bytes_written + UPLOAD_CONTENT_CHUNK_SIZE
-                    ]
-                    chunk_b64 = base64.b64encode(chunk).decode("ascii")
-                    mode = "wb" if first_chunk else "ab"
-
-                    write_code = f"""
-import base64
-chunk_data = base64.b64decode({repr(chunk_b64)})
-with open({repr(validated_path)}, {repr(mode)}) as f:
-    f.write(chunk_data)
-print(f"Wrote {{len(chunk_data)}} bytes")
-"""
-                    write_result = await notebook.execute_new_code(write_code)
-                    if write_result["error"]:
-                        return {
-                            "error": (
-                                f"Upload failed during streaming: "
-                                f"{'; '.join(write_result['error'])}"
-                            )
-                        }
-
-                    bytes_written += len(chunk)
-                    first_chunk = False
-            else:
-                # Text: chunk by character count to avoid splitting
-                # multi-byte UTF-8 characters at byte boundaries.
-                chars_written = 0
-                total_chars = len(content)
-                # Approximate char count per chunk: assume ~1 byte/char
-                # on average for typical text. For CJK/emoji-heavy text
-                # this over-estimates chunk byte size, which is safe.
-                chunk_char_size = UPLOAD_CONTENT_CHUNK_SIZE
-                first_chunk = True
-
-                while chars_written < total_chars:
-                    chunk_str = content[chars_written : chars_written + chunk_char_size]
-                    mode = "w" if first_chunk else "a"
-
-                    dest = repr(validated_path)
-                    write_code = f"""
-with open({dest}, {repr(mode)}) as f:
-    f.write({repr(chunk_str)})
-print(f"Wrote {{len({repr(chunk_str)})}} chars")
-"""
-                    write_result = await notebook.execute_new_code(write_code)
-                    if write_result["error"]:
-                        return {
-                            "error": (
-                                f"Upload failed during streaming: "
-                                f"{'; '.join(write_result['error'])}"
-                            )
-                        }
-
-                    chars_written += len(chunk_str)
-                    first_chunk = False
-        else:
-            # Small content: single write (original behavior)
-            if is_binary:
-                code = f"""
-import base64
-content_bytes = base64.b64decode({repr(content)})
-with open({repr(validated_path)}, 'wb') as f:
-    f.write(content_bytes)
-print(f"File written successfully to {{repr({repr(validated_path)})}}")
-"""
-            else:
-                code = f"""
-with open({repr(validated_path)}, 'w') as f:
-    f.write({repr(content)})
-print(f"File written successfully to {{repr({repr(validated_path)})}}")
-"""
-
-            result = await notebook.execute_new_code(code)
-            if result["error"]:
-                return {"error": "; ".join(result["error"])}
-
-        # Update last access
-        session.touch()
-        await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
-        )
-
-        return {"status": "success", "path": destination_path}
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        return {"error": f"Upload failed: {str(e)}"}
-
-
-@mcp.tool(
     "download_file",
     description=(
-        "Downloads a file from the session directory and returns its full content. "
-        "Requires a valid session_id. Returns file content as text or "
-        "base64-encoded binary depending on file type. "
-        "For large files or when you only need the path to reference the file in "
-        "code, prefer get_sandbox_path which returns the sandbox path and metadata "
-        "without transferring content."
+        "Downloads a file from the session directory and returns its "
+        "full content. Requires a valid session_id. Returns file "
+        "content as text or base64-encoded binary depending on file "
+        "type. For large files, use list_dir to discover paths and "
+        "reference them directly in execute_code instead of "
+        "downloading."
     ),
 )
 async def download_file(session_id: str, path: str) -> dict[str, str]:
     """Downloads a file from the session directory.
 
-    Returns the full content of a file from the sandbox.  For large files
-    or when you only need to reference the file in subsequent code
-    execution, prefer :func:`get_sandbox_path` which returns the path and
-    metadata without transferring the file content.
+    Returns the full content of a file from the sandbox.
 
     :param session_id: Valid session identifier.
     :type session_id: str
@@ -628,8 +449,6 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
     :return: Dictionary with 'content', 'encoding' ('text' or 'base64'), or 'error'.
     :rtype: dict[str, str]
     """
-    import base64
-
     from jupyter_interpreter_mcp.session import detect_content_type, validate_path
 
     global sessions, notebooks
@@ -715,7 +534,6 @@ else:
 
 
 UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB for file path uploads
-UPLOAD_CONTENT_CHUNK_SIZE = 512 * 1024  # 512 KB for content-based uploads
 
 
 @mcp.tool(
@@ -869,7 +687,8 @@ print(f"Wrote {{len(chunk_data)}} bytes")
             session.kernel_id, session.directory, session.last_access
         )
 
-        # 3.9 Return success with sandbox_path label
+        # Return success with absolute sandbox_path so agents can
+        # reference it directly in execute_code calls.
         return {
             "status": "success",
             "sandbox_path": validated_dest,
@@ -879,109 +698,6 @@ print(f"Wrote {{len(chunk_data)}} bytes")
         return {"error": str(e)}
     except Exception as e:
         return {"error": f"Upload by path failed: {str(e)}"}
-
-
-@mcp.tool(
-    "get_sandbox_path",
-    description=(
-        "Returns the absolute sandbox path and metadata for a file in the session "
-        "directory without transferring its content. Requires a valid session_id. "
-        "Use this tool instead of download_file when you only need the file's "
-        "path for referencing in code, or when the file is too large to include "
-        "in context. Returns sandbox_path, size (bytes), and last_modified "
-        "timestamp."
-    ),
-)
-async def get_sandbox_path(session_id: str, file_path: str) -> dict[str, str]:
-    """Get the sandbox absolute path and metadata for a file.
-
-    Validates that the file exists within the session directory and
-    returns its absolute sandbox path along with file metadata (size in
-    bytes and last-modified timestamp) without reading the file content.
-
-    :param session_id: Valid session identifier.
-    :type session_id: str
-    :param file_path: File path relative to the session directory.
-    :type file_path: str
-    :return: Dictionary with ``sandbox_path``, ``size``, and
-        ``last_modified`` on success, or ``error`` key.
-    :rtype: dict[str, str]
-    """
-    from jupyter_interpreter_mcp.session import validate_path
-
-    global sessions, notebooks
-
-    try:
-        # Restore from disk if not already loaded in memory
-        await ensure_session_available(session_id)
-
-        # 4.1 Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
-
-        # 4.2 Path validation: ensure file is within session directory
-        validated_path = validate_path(session.directory, file_path)
-
-        # 4.3 File existence check + 4.4 metadata retrieval via kernel
-        code = f"""
-import os
-import json
-
-file_path = {repr(validated_path)}
-if not os.path.exists(file_path):
-    print("FILE_NOT_FOUND")
-elif not os.path.isfile(file_path):
-    print("NOT_A_FILE")
-else:
-    stat = os.stat(file_path)
-    info = {{
-        "sandbox_path": file_path,
-        "size": stat.st_size,
-        "last_modified": stat.st_mtime
-    }}
-    print("METADATA_START")
-    print(json.dumps(info))
-    print("METADATA_END")
-"""
-        result = await notebook.execute_new_code(code)
-
-        if result["error"]:
-            return {"error": "; ".join(result["error"])}
-
-        output = "".join(result["result"])
-
-        if "FILE_NOT_FOUND" in output:
-            return {"error": f"File not found in sandbox: {file_path}"}
-        if "NOT_A_FILE" in output:
-            return {"error": f"Path is not a file: {file_path}"}
-
-        # Parse metadata
-        if "METADATA_START" in output and "METADATA_END" in output:
-            import json
-
-            start_idx = output.index("METADATA_START") + len("METADATA_START")
-            end_idx = output.index("METADATA_END")
-            metadata_json = output[start_idx:end_idx].strip()
-            metadata = json.loads(metadata_json)
-
-            # Update last access
-            session.touch()
-            await remote_client.update_session_metadata(
-                session.kernel_id, session.directory, session.last_access
-            )
-
-            # 4.5 + 4.6 Return sandbox_path and metadata
-            return {
-                "sandbox_path": metadata["sandbox_path"],
-                "size": str(metadata["size"]),
-                "last_modified": str(metadata["last_modified"]),
-            }
-        else:
-            return {"error": "Failed to retrieve file metadata"}
-
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        return {"error": f"Get sandbox path failed: {str(e)}"}
 
 
 @mcp.tool(
