@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import os
 import sys
 import time
@@ -446,6 +447,9 @@ async def upload_file(
     is an isolated environment -- files must be uploaded before code in the
     interpreter can access them.
 
+    For large content (>512 KB), the upload is performed in chunks to avoid
+    WebSocket message size limits and kernel memory issues.
+
     For large local files on the host filesystem, prefer
     :func:`upload_file_path` which streams the file by path without requiring
     the content in the request payload.
@@ -475,36 +479,115 @@ async def upload_file(
         # Validate path
         validated_path = validate_path(session.directory, destination_path)
 
-        # Create upload code
-        code = f"""
+        # Ensure destination directory exists
+        mkdir_code = f"""
 import os
-import base64
-
-destination = {repr(validated_path)}
-os.makedirs(os.path.dirname(destination), exist_ok=True)
-
+os.makedirs(os.path.dirname({repr(validated_path)}), exist_ok=True)
+print("DIR_READY")
 """
+        mkdir_result = await notebook.execute_new_code(mkdir_code)
+        if mkdir_result["error"]:
+            return {"error": "; ".join(mkdir_result["error"])}
+
+        # For binary content, decode first to get raw size
+        content_bytes = None
         if is_binary:
-            code += f"""
-content_bytes = base64.b64decode({repr(content)})
-with open(destination, 'wb') as f:
-    f.write(content_bytes)
-"""
+            try:
+                content_bytes = base64.b64decode(content)
+            except Exception as e:
+                return {"error": f"Invalid base64 content: {str(e)}"}
+            content_size = len(content_bytes)
         else:
-            code += f"""
-with open(destination, 'w') as f:
+            content_size = len(content.encode("utf-8"))
+
+        # Use chunked upload for large content
+        if content_size > UPLOAD_CONTENT_CHUNK_SIZE:
+            # Chunked upload
+            if is_binary:
+                # Binary: work with decoded bytes
+                if content_bytes is None:
+                    return {"error": "Internal error: content_bytes is None"}
+
+                bytes_written = 0
+                first_chunk = True
+
+                while bytes_written < content_size:
+                    chunk = content_bytes[
+                        bytes_written : bytes_written + UPLOAD_CONTENT_CHUNK_SIZE
+                    ]
+                    chunk_b64 = base64.b64encode(chunk).decode("ascii")
+                    mode = "wb" if first_chunk else "ab"
+
+                    write_code = f"""
+import base64
+chunk_data = base64.b64decode({repr(chunk_b64)})
+with open({repr(validated_path)}, {repr(mode)}) as f:
+    f.write(chunk_data)
+print(f"Wrote {{len(chunk_data)}} bytes")
+"""
+                    write_result = await notebook.execute_new_code(write_code)
+                    if write_result["error"]:
+                        return {
+                            "error": (
+                                f"Upload failed during streaming: "
+                                f"{'; '.join(write_result['error'])}"
+                            )
+                        }
+
+                    bytes_written += len(chunk)
+                    first_chunk = False
+            else:
+                # Text: chunk by character count to avoid splitting
+                # multi-byte UTF-8 characters at byte boundaries.
+                chars_written = 0
+                total_chars = len(content)
+                # Approximate char count per chunk: assume ~1 byte/char
+                # on average for typical text. For CJK/emoji-heavy text
+                # this over-estimates chunk byte size, which is safe.
+                chunk_char_size = UPLOAD_CONTENT_CHUNK_SIZE
+                first_chunk = True
+
+                while chars_written < total_chars:
+                    chunk_str = content[chars_written : chars_written + chunk_char_size]
+                    mode = "w" if first_chunk else "a"
+
+                    dest = repr(validated_path)
+                    write_code = f"""
+with open({dest}, {repr(mode)}) as f:
+    f.write({repr(chunk_str)})
+print(f"Wrote {{len({repr(chunk_str)})}} chars")
+"""
+                    write_result = await notebook.execute_new_code(write_code)
+                    if write_result["error"]:
+                        return {
+                            "error": (
+                                f"Upload failed during streaming: "
+                                f"{'; '.join(write_result['error'])}"
+                            )
+                        }
+
+                    chars_written += len(chunk_str)
+                    first_chunk = False
+        else:
+            # Small content: single write (original behavior)
+            if is_binary:
+                code = f"""
+import base64
+content_bytes = base64.b64decode({repr(content)})
+with open({repr(validated_path)}, 'wb') as f:
+    f.write(content_bytes)
+print(f"File written successfully to {{repr({repr(validated_path)})}}")
+"""
+            else:
+                code = f"""
+with open({repr(validated_path)}, 'w') as f:
     f.write({repr(content)})
+print(f"File written successfully to {{repr({repr(validated_path)})}}")
 """
 
-        code += """
-print(f"File written successfully to {destination}")
-"""
-
-        # Execute upload
-        result = await notebook.execute_new_code(code)
-
-        if result["error"]:
-            return {"error": "; ".join(result["error"])}
+            result = await notebook.execute_new_code(code)
+            if result["error"]:
+                return {"error": "; ".join(result["error"])}
 
         # Update last access
         session.touch()
@@ -631,7 +714,8 @@ else:
         return {"error": f"Download failed: {str(e)}"}
 
 
-UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
+UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB for file path uploads
+UPLOAD_CONTENT_CHUNK_SIZE = 512 * 1024  # 512 KB for content-based uploads
 
 
 @mcp.tool(
@@ -675,8 +759,6 @@ async def upload_file_path(
     :return: Dictionary with ``sandbox_path`` on success or ``error`` key.
     :rtype: dict[str, str]
     """
-    import base64
-
     from jupyter_interpreter_mcp.session import (
         is_sensitive_file,
         validate_host_path,
@@ -1067,6 +1149,18 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--allowed-dir",
+        action="append",
+        dest="allowed_dirs",
+        metavar="PATH",
+        help=(
+            "Allow file uploads from this directory (can be specified multiple times). "
+            "Takes precedence over ALLOWED_UPLOAD_DIRS environment variable. "
+            "If neither --allowed-dir nor ALLOWED_UPLOAD_DIRS is set, uploads are "
+            "allowed from any directory (subject to sensitive file protection)."
+        ),
+    )
+    parser.add_argument(
         "--version",
         "-v",
         action="version",
@@ -1075,6 +1169,19 @@ def main() -> None:
 
     # Parse arguments (CLI args will override the defaults)
     args = parser.parse_args()
+
+    # Configure allowed upload directories if specified
+    if args.allowed_dirs:
+        from jupyter_interpreter_mcp.session import set_allowed_upload_dirs
+
+        set_allowed_upload_dirs(args.allowed_dirs)
+        print(f"Allowed upload directories: {', '.join(args.allowed_dirs)}")
+    elif os.getenv("ALLOWED_UPLOAD_DIRS"):
+        print(
+            f"Allowed upload directories (from env): {os.getenv('ALLOWED_UPLOAD_DIRS')}"
+        )
+    else:
+        print("Allowed upload directories: all paths (no restriction)")
 
     # Build configuration with precedence: CLI args > env vars > defaults
     # argparse already handles this via default= parameter

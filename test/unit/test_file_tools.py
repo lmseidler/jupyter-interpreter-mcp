@@ -24,6 +24,7 @@ class TestUploadFilePath:
             directory=session_dir,
         )
         server.sessions = {session_id: session}
+        server.session_ttl = 0
 
         mock_notebook = Mock()
         mock_notebook.execute_new_code = AsyncMock(
@@ -264,6 +265,7 @@ class TestGetSandboxPath:
             directory=session_dir,
         )
         server.sessions = {session_id: session}
+        server.session_ttl = 0
 
         mock_notebook = Mock()
         mock_notebook.execute_new_code = AsyncMock(

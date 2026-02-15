@@ -299,25 +299,97 @@ execute_code(
 
 ## Path Security Configuration
 
-The `upload_file_path` tool restricts which host filesystem paths can be uploaded for security. By default, only files within the current working directory are allowed.
+The `upload_file_path` tool restricts which host filesystem paths can be uploaded for security. You can configure allowed directories using either a command-line argument or an environment variable.
 
-### ALLOWED_UPLOAD_DIRS
+### Configuration Methods (in order of precedence)
 
-Set the `ALLOWED_UPLOAD_DIRS` environment variable to a colon-separated list of absolute directory paths to control which directories are permitted:
+#### 1. `--allowed-dir` CLI Argument
+
+Pass one or more `--allowed-dir` arguments when starting the server:
+
+```bash
+# Allow uploads from a single directory
+jupyter-interpreter-mcp --allowed-dir /home/user/projects
+
+# Allow uploads from multiple directories
+jupyter-interpreter-mcp \
+  --allowed-dir /home/user/projects \
+  --allowed-dir /home/user/data
+```
+
+This is useful for MCP clients that support passing command-line arguments.
+
+#### 2. `ALLOWED_UPLOAD_DIRS` Environment Variable
+
+Set the `ALLOWED_UPLOAD_DIRS` environment variable to a colon-separated list of absolute directory paths:
 
 ```bash
 # Allow uploads from multiple directories
-ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
+export ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
 
-# Allow uploads from a single directory
-ALLOWED_UPLOAD_DIRS=/home/user/projects
+# Or in your .env file
+ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
 ```
 
-When unset, defaults to the current working directory of the MCP server process.
+#### 3. Default Behavior (No Restriction)
+
+**When neither `--allowed-dir` nor `ALLOWED_UPLOAD_DIRS` is set, uploads are allowed from any directory** on the host filesystem. Sensitive file protection (see below) is always active regardless of this setting.
+
+This "allow all" default is designed for local development and trusted environments. For production deployments or multi-user setups, explicitly configure allowed directories using one of the methods above.
+
+### MCP Client Configuration Examples
+
+#### OpenCode
+
+In your `opencode.jsonc` (global config at `~/.config/opencode/opencode.json` or per-project):
+
+```jsonc
+{
+  "mcp": {
+    "jupyter-interpreter": {
+      "type": "local",
+      "command": [
+        "uv", "run", "--project", "/path/to/jupyter-interpreter-mcp",
+        "jupyter-interpreter-mcp",
+        "--allowed-dir", "/home/user/projects",
+        "--jupyter-base-url", "http://localhost:8888",
+        // ... other args
+      ],
+      // Or use environment variables:
+      "environment": {
+        "ALLOWED_UPLOAD_DIRS": "/home/user/projects:/home/user/data"
+      }
+    }
+  }
+}
+```
+
+For most use cases, either use the environment variable approach with hardcoded paths, or rely on the "allow all" default with sensitive file protection.
+
+#### Claude Desktop / Cursor
+
+In `claude_desktop_config.json` or `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "jupyter-interpreter": {
+      "command": "jupyter-interpreter-mcp",
+      "args": [
+        "--allowed-dir", "/home/user/projects",
+        "--jupyter-base-url", "http://localhost:8888"
+      ],
+      "env": {
+        "JUPYTER_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
 
 ### Sensitive File Protection
 
-Regardless of allowed directories, the following file patterns are always blocked:
+Regardless of allowed directories, the following file patterns are **always blocked** from upload:
 - `.env` files (e.g., `.env`, `.env.local`)
 - SSH keys and configuration (`.ssh/`)
 - GPG keys (`.gnupg/`)
