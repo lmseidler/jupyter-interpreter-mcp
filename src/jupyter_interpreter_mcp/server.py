@@ -19,9 +19,9 @@ from jupyter_interpreter_mcp.remote import (
 from jupyter_interpreter_mcp.session import Session
 
 # Global variables initialized in main()
-remote_client: RemoteJupyterClient
-sessions_dir: str
-session_ttl: float
+remote_client: RemoteJupyterClient = None  # type: ignore
+sessions_dir: str = os.getenv("SESSIONS_DIR", "/home/jovyan/sessions")
+session_ttl: float = float(os.getenv("SESSION_TTL", "3600"))
 
 mcp = FastMCP(
     name="Code Interpreter",
@@ -718,14 +718,19 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
     """
     from jupyter_interpreter_mcp.session import validate_path
 
-    global sessions, notebooks
+    global sessions, notebooks, remote_client, sessions_dir
 
     try:
         # Restore from disk if not already loaded in memory
         await ensure_session_available(session_id)
 
-        # Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
+        # Validate session under lock
+        async with registry_lock:
+            if session_id not in sessions:
+                return {"error": f"Session {session_id} not found", "result": []}
+            session = sessions[session_id]
+            if session.is_expired(session_ttl):
+                return {"error": f"Session {session_id} has expired", "result": []}
 
         # Validate path
         if path:
@@ -733,103 +738,58 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
         else:
             validated_path = session.directory
 
-        # List directory via kernel execution
-        code = f"""
-import os
-import json
-from datetime import datetime
-import stat
+        # Derive Jupyter root from sessions_dir
+        # (e.g. /home/jovyan/sessions -> /home/jovyan)
+        # Note: We assume sessions_dir is a subdirectory of the Jupyter root.
+        jupyter_root = os.path.dirname(sessions_dir.rstrip("/"))
+        api_path = os.path.relpath(validated_path, jupyter_root)
 
-dir_path = {repr(validated_path)}
-if not os.path.exists(dir_path):
-    print("DIR_NOT_FOUND")
-elif not os.path.isdir(dir_path):
-    print("NOT_A_DIRECTORY")
-else:
-    entries = []
-    for item in sorted(os.listdir(dir_path)):
-        full_path = os.path.join(dir_path, item)
-        try:
-            st = os.lstat(full_path)
-        except OSError:
-            continue
+        # Get contents via Jupyter Contents API
+        # Using sync method from RemoteJupyterClient as per codebase pattern
+        response = remote_client.get_contents(api_path)
 
-        mode = stat.filemode(st.st_mode)
-        mtime = datetime.fromtimestamp(st.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
-
-        entry = {{
-            'name': item,
-            'mode': mode,
-            'mtime': mtime
-        }}
-
-        if os.path.isdir(full_path):
-            entry['type'] = 'directory'
-        else:
-            entry['type'] = 'file'
-            entry['size'] = st.st_size
-
-        entries.append(entry)
-
-    print("DIR_LISTING_START")
-    print(json.dumps(entries))
-    print("DIR_LISTING_END")
-"""
-
-        result = await notebook.execute_new_code(code)
-
-        if result["error"]:
-            return {"error": "; ".join(result["error"]), "result": []}
-
-        output = "".join(result["result"])
-
-        if "DIR_NOT_FOUND" in output:
-            return {"error": f"Directory not found: {path}", "result": []}
-        if "NOT_A_DIRECTORY" in output:
+        if response.get("type") != "directory":
             return {"error": f"Not a directory: {path}", "result": []}
 
-        # Extract listing
-        if "DIR_LISTING_START" in output and "DIR_LISTING_END" in output:
-            start_idx = output.index("DIR_LISTING_START") + len("DIR_LISTING_START")
-            end_idx = output.index("DIR_LISTING_END")
-            listing_json = output[start_idx:end_idx].strip()
+        entries = response.get("content", [])
+        result_lines = []
 
-            entries = json.loads(listing_json)
-
-            # Format output
-            result_lines = []
-            if not entries:
-                result_lines.append("(empty directory)")
-            else:
-                for entry in entries:
-                    item_type = entry["type"]
-                    name = entry["name"]
-                    mode = entry["mode"]
-                    mtime = entry["mtime"]
-
-                    if item_type == "directory":
-                        result_lines.append(
-                            f"{mode}  {mtime}  {'directory':>10}  {name}"
-                        )
-                    else:
-                        size = entry.get("size", 0)
-                        if size < 1024:
-                            size_str = f"{size} B"
-                        elif size < 1024 * 1024:
-                            size_str = f"{size / 1024:.1f} KB"
-                        else:
-                            size_str = f"{size / (1024 * 1024):.1f} MB"
-                        result_lines.append(f"{mode}  {mtime}  {size_str:>10}  {name}")
-
-            # Update last access
-            session.touch()
-            await remote_client.update_session_metadata(
-                session.kernel_id, session.directory, session.last_access
+        if not entries:
+            result_lines.append("(empty directory)")
+        else:
+            # Sort entries: directories first, then alphabetically
+            sorted_entries = sorted(
+                entries,
+                key=lambda x: (x.get("type") != "directory", x.get("name", "").lower()),
             )
 
-            return {"error": "", "result": result_lines}
-        else:
-            return {"error": "Failed to retrieve directory listing", "result": []}
+            for entry in sorted_entries:
+                name = entry.get("name", "unknown")
+                item_type = entry.get("type", "unknown")
+                mtime = entry.get("last_modified", "unknown")
+
+                if item_type == "directory":
+                    result_lines.append(f"directory {name} - modified: {mtime}")
+                else:
+                    size = entry.get("size", 0)
+                    if size < 1024:
+                        size_str = f"{size} B"
+                    elif size < 1024 * 1024:
+                        size_str = f"{size / 1024:.1f} KB"
+                    else:
+                        size_str = f"{size / (1024 * 1024):.1f} MB"
+                    result_lines.append(
+                        f"{item_type} {name} ({size_str}) - modified: {mtime}"
+                    )
+
+        # Update last access
+        session.touch()
+        # Still update metadata on remote side for persistence
+        await remote_client.update_session_metadata(
+            session.kernel_id, session.directory, session.last_access
+        )
+
+        return {"error": "", "result": result_lines}
 
     except ValueError as e:
         return {"error": str(e), "result": []}

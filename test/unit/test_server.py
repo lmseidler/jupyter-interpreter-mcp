@@ -345,74 +345,83 @@ class TestListDirTool:
 
     @pytest.mark.asyncio
     @patch("jupyter_interpreter_mcp.server.ensure_session_available")
-    @patch("jupyter_interpreter_mcp.server.get_session_and_notebook")
-    @patch("jupyter_interpreter_mcp.server.remote_client", create=True)
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
     async def test_list_dir_success(
-        self, mock_remote_client, mock_get_session, mock_ensure
+        self, mock_sessions, mock_remote_client, mock_ensure
     ):
         """Test successful directory listing."""
+        import time
+
         from jupyter_interpreter_mcp import server
 
         mock_session = Mock(spec=Session)
-        mock_session.directory = "/mock/dir"
+        mock_session.directory = "/home/jovyan/sessions/test-session"
         mock_session.kernel_id = "test-kernel"
-        mock_session.last_access = "2024-01-29T12:00:00"
-        mock_notebook = AsyncMock()
-        mock_get_session.return_value = (mock_session, mock_notebook)
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
 
-        mock_notebook.execute_new_code.return_value = {
-            "error": [],
-            "result": [
-                "DIR_LISTING_START\n",
-                "["
-                + ", ".join(
-                    [
-                        '{"name": "file1.txt", "type": "file",'
-                        ' "size": 1024, "mode": "-rw-r--r--",'
-                        ' "mtime": "2024-01-29 12:00:00"}',
-                        '{"name": "subdir", "type": "directory",'
-                        ' "mode": "drwxr-xr-x",'
-                        ' "mtime": "2024-01-29 11:00:00"}',
-                    ]
-                )
-                + "]\n",
-                "DIR_LISTING_END\n",
+        mock_remote_client.get_contents.return_value = {
+            "type": "directory",
+            "content": [
+                {
+                    "name": "file1.txt",
+                    "type": "file",
+                    "size": 1024,
+                    "last_modified": "2024-01-29T12:00:00Z",
+                },
+                {
+                    "name": "subdir",
+                    "type": "directory",
+                    "last_modified": "2024-01-29T11:00:00Z",
+                },
             ],
         }
-
         mock_remote_client.update_session_metadata = AsyncMock()
 
         result = await server.list_dir(session_id="test-session")
 
         assert result["error"] == ""
         assert len(result["result"]) == 2
+        # Directories first, then files alphabetically
         assert (
-            "-rw-r--r--  2024-01-29 12:00:00      1.0 KB  file1.txt" in result["result"]
+            "directory subdir - modified: 2024-01-29T11:00:00Z" == result["result"][0]
         )
-        assert "drwxr-xr-x  2024-01-29 11:00:00   directory  subdir" in result["result"]
+        assert (
+            "file file1.txt (1.0 KB) - modified: 2024-01-29T12:00:00Z"
+            == result["result"][1]
+        )
+
+        # Verify path calculation:
+        # /home/jovyan/sessions/test-session -> sessions/test-session
+        mock_remote_client.get_contents.assert_called_once_with("sessions/test-session")
 
     @pytest.mark.asyncio
     @patch("jupyter_interpreter_mcp.server.ensure_session_available")
-    @patch("jupyter_interpreter_mcp.server.get_session_and_notebook")
-    @patch("jupyter_interpreter_mcp.server.remote_client", create=True)
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
     async def test_list_dir_empty_directory(
-        self, mock_remote_client, mock_get_session, mock_ensure
+        self, mock_sessions, mock_remote_client, mock_ensure
     ):
         """Test listing an empty directory."""
+        import time
+
         from jupyter_interpreter_mcp import server
 
         mock_session = Mock(spec=Session)
-        mock_session.directory = "/mock/dir"
+        mock_session.directory = "/home/jovyan/sessions/test-session"
         mock_session.kernel_id = "test-kernel"
-        mock_session.last_access = "2024-01-29T12:00:00"
-        mock_notebook = AsyncMock()
-        mock_get_session.return_value = (mock_session, mock_notebook)
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
 
-        mock_notebook.execute_new_code.return_value = {
-            "error": [],
-            "result": ["DIR_LISTING_START\n", "[]\n", "DIR_LISTING_END\n"],
+        mock_remote_client.get_contents.return_value = {
+            "type": "directory",
+            "content": [],
         }
-
         mock_remote_client.update_session_metadata = AsyncMock()
 
         result = await server.list_dir(session_id="test-session")
@@ -422,44 +431,56 @@ class TestListDirTool:
 
     @pytest.mark.asyncio
     @patch("jupyter_interpreter_mcp.server.ensure_session_available")
-    @patch("jupyter_interpreter_mcp.server.get_session_and_notebook")
-    async def test_list_dir_not_found(self, mock_get_session, mock_ensure):
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    async def test_list_dir_not_found(
+        self, mock_sessions, mock_remote_client, mock_ensure
+    ):
         """Test directory not found."""
+        import time
+
         from jupyter_interpreter_mcp import server
+        from jupyter_interpreter_mcp.remote import JupyterConnectionError
 
         mock_session = Mock(spec=Session)
-        mock_session.directory = "/mock/dir"
-        mock_notebook = AsyncMock()
-        mock_get_session.return_value = (mock_session, mock_notebook)
+        mock_session.directory = "/home/jovyan/sessions/test-session"
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
 
-        mock_notebook.execute_new_code.return_value = {
-            "error": [],
-            "result": ["DIR_NOT_FOUND\n"],
-        }
+        mock_remote_client.get_contents.side_effect = JupyterConnectionError(
+            "Path not found: ghost"
+        )
 
         result = await server.list_dir(session_id="test-session", path="ghost")
 
-        assert "Directory not found: ghost" in result["error"]
+        assert "Path not found: ghost" in result["error"]
         assert result["result"] == []
 
     @pytest.mark.asyncio
     @patch("jupyter_interpreter_mcp.server.ensure_session_available")
-    @patch("jupyter_interpreter_mcp.server.get_session_and_notebook")
-    async def test_list_dir_execution_error(self, mock_get_session, mock_ensure):
-        """Test error during kernel execution."""
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    async def test_list_dir_permission_denied(
+        self, mock_sessions, mock_remote_client, mock_ensure
+    ):
+        """Test permission denied."""
+        import time
+
         from jupyter_interpreter_mcp import server
+        from jupyter_interpreter_mcp.remote import JupyterAuthError
 
         mock_session = Mock(spec=Session)
-        mock_session.directory = "/mock/dir"
-        mock_notebook = AsyncMock()
-        mock_get_session.return_value = (mock_session, mock_notebook)
+        mock_session.directory = "/home/jovyan/sessions/test-session"
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
 
-        mock_notebook.execute_new_code.return_value = {
-            "error": ["Traceback..."],
-            "result": [],
-        }
+        mock_remote_client.get_contents.side_effect = JupyterAuthError(
+            "Permission denied"
+        )
 
         result = await server.list_dir(session_id="test-session")
 
-        assert "Traceback..." in result["error"]
+        assert "Permission denied" in result["error"]
         assert result["result"] == []
