@@ -686,11 +686,11 @@ print(f"Wrote {{len(chunk_data)}} bytes")
             session.kernel_id, session.directory, session.last_access
         )
 
-        # Return success with absolute sandbox_path so agents can
+        # Return success with relative sandbox_path so agents can
         # reference it directly in execute_code calls.
         return {
             "status": "success",
-            "sandbox_path": validated_dest,
+            "sandbox_path": destination_path,
             "size": str(file_size),
         }
     except ValueError as e:
