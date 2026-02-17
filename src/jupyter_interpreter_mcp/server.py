@@ -363,8 +363,8 @@ print(f"Working directory: {{os.getcwd()}}")
 @mcp.tool(
     "execute_code",
     description=(
-        "Executes code (Python or bash) within a persistent session, retaining "
-        "past results (e.g., variables, imports). Similar to a Jupyter notebook. "
+        "Executes code (Python or bash) within a persistent session. Past results "
+        "(e.g., variables, imports) can be reused, similar to a Jupyter notebook. "
         "Requires a valid session_id obtained from create_session. "
         "Bash commands (e.g., 'ls', 'pwd') work directly without wrappers and "
         "can be used to install packages."
