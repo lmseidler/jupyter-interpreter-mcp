@@ -532,14 +532,16 @@ else:
         return {"error": f"Download failed: {str(e)}"}
 
 
-UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB for file path uploads
+UPLOAD_CHUNK_SIZE = (
+    700 * 1024
+)  # 700 KB raw; ~933 KB after base64 (within 1 MB WS limit)
 
 
 @mcp.tool(
     "upload_file_path",
     description=(
         "Uploads a file from the host filesystem to the session directory using "
-        "a local absolute path. Streams the file in 8 MB chunks, making it "
+        "a local absolute path. Streams the file in chunks, making it "
         "suitable for large files. Requires a valid session_id. "
         "The host_path must be an absolute path within the allowed upload "
         "directories. Sensitive files (.env, .ssh/, credentials, etc.) are "
@@ -853,8 +855,14 @@ def main() -> None:
             "Allow file uploads from this directory (can be specified multiple times). "
             "Takes precedence over ALLOWED_UPLOAD_DIRS environment variable. "
             "If neither --allowed-dir nor ALLOWED_UPLOAD_DIRS is set, uploads are "
-            "allowed from any directory (subject to sensitive file protection)."
+            "only allowed from the current working directory."
         ),
+    )
+    parser.add_argument(
+        "--allow-all",
+        dest="allow_all",
+        action="store_true",
+        help="Allow uploads from all directories.",
     )
     parser.add_argument(
         "--version",
@@ -876,8 +884,14 @@ def main() -> None:
         print(
             f"Allowed upload directories (from env): {os.getenv('ALLOWED_UPLOAD_DIRS')}"
         )
+    elif args.allow_all:
+        print("Allowing uploads from all directories")
     else:
-        print("Allowed upload directories: all paths (no restriction)")
+        from jupyter_interpreter_mcp.session import set_allowed_upload_dirs
+
+        cwd = str(Path.cwd().resolve())
+        set_allowed_upload_dirs([cwd])
+        print(f"Allowed upload directories: {cwd}")
 
     # Build configuration with precedence: CLI args > env vars > defaults
     # argparse already handles this via default= parameter

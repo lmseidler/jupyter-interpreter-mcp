@@ -211,8 +211,7 @@ result = list_dir(session_id=session_id, path="images")
 ```
 
 ### upload_file_path
-
-Upload a file from the host filesystem to the session directory by providing its absolute path. The file is streamed in 8 MB chunks, making it suitable for large files. Security restrictions apply -- only files within allowed directories are permitted, and sensitive files (`.env`, `.ssh/`, credentials, etc.) are blocked.
+Upload a file from the host filesystem to the session directory by providing its absolute path. Only files within allowed directories are permitted, and sensitive files (`.env`, `.ssh/`, credentials, etc.) are blocked.
 
 **Parameters:**
 - `session_id` (string, required): The session ID
@@ -256,8 +255,6 @@ jupyter-interpreter-mcp \
   --allowed-dir /home/user/data
 ```
 
-This is useful for MCP clients that support passing command-line arguments.
-
 #### 2. `ALLOWED_UPLOAD_DIRS` Environment Variable
 
 Set the `ALLOWED_UPLOAD_DIRS` environment variable to a colon-separated list of absolute directory paths:
@@ -270,11 +267,13 @@ export ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
 ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
 ```
 
-#### 3. Default Behavior (No Restriction)
+#### 3. Allow all
 
-**When neither `--allowed-dir` nor `ALLOWED_UPLOAD_DIRS` is set, uploads are allowed from any directory** on the host filesystem. Sensitive file protection (see below) is always active regardless of this setting.
+Using the `--allow-all` flag will allow uploads from any directory on the host filesystem.
 
-This "allow all" default is designed for local development and trusted environments. For production deployments or multi-user setups, explicitly configure allowed directories using one of the methods above.
+#### 4. Default Behavior
+
+**When neither `--allowed-dir` nor `ALLOWED_UPLOAD_DIRS` is set, uploads are allowed only from the current working directory** on the host filesystem. Sensitive file protection (see below) is always active regardless of this setting.
 
 ### MCP Client Configuration Examples
 

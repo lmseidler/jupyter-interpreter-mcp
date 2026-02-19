@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
+import jupyter_interpreter_mcp.session as session_module
+from jupyter_interpreter_mcp import server
 from jupyter_interpreter_mcp.session import Session
 
 
@@ -248,3 +250,59 @@ class TestUploadFilePath:
 
             assert "error" in result
             assert "sensitive" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_default_allows_only_cwd(self):
+        """6.9 - By default, uploads are restricted to CWD only."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create file outside CWD (tmpdir is different from CWD)
+            host_file = Path(tmpdir) / "data.csv"
+            host_file.write_text("a,b,c")
+
+            session_dir = str(Path(tmpdir) / "session")
+            Path(session_dir).mkdir()
+
+            self._setup_server(server, session_dir)
+
+            # Simulate default CWD-only behavior by setting CWD as allowed
+            # This is what server.py does when no --allowed-dirs or env var is set
+            original_config = session_module._configured_allowed_dirs
+            try:
+                session_module._configured_allowed_dirs = [str(Path.cwd().resolve())]
+                with patch.dict("os.environ", {}, clear=True):
+                    result = await server.upload_file_path(
+                        session_id="test-session",
+                        host_path=str(host_file),
+                        destination_path="data.csv",
+                    )
+
+                assert "error" in result
+                assert "outside allowed" in result["error"]
+            finally:
+                session_module._configured_allowed_dirs = original_config
+
+    @pytest.mark.asyncio
+    async def test_allow_all_uploads_when_configured(self):
+        """6.10 - Allow all uploads when explicitly configured via env."""
+        from jupyter_interpreter_mcp import server
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a file to upload
+            host_file = Path(tmpdir) / "data.csv"
+            host_file.write_text("a,b,c")
+
+            session_dir = str(Path(tmpdir) / "session")
+            Path(session_dir).mkdir()
+
+            self._setup_server(server, session_dir)
+
+            # Use ALLOWED_UPLOAD_DIRS with tmpdir to allow uploads from there
+            with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
+                result = await server.upload_file_path(
+                    session_id="test-session",
+                    host_path=str(host_file),
+                    destination_path="data.csv",
+                )
+
+            assert "error" not in result
+            assert result["status"] == "success"

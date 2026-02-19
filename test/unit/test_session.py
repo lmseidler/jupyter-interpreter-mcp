@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+import jupyter_interpreter_mcp.session as session_module
 from jupyter_interpreter_mcp.session import (
     Session,
     detect_content_type,
@@ -16,6 +17,15 @@ from jupyter_interpreter_mcp.session import (
     validate_host_path,
     validate_path,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_allowed_upload_dirs():
+    """Reset the configured allowed upload dirs before each test."""
+    original = session_module._configured_allowed_dirs
+    session_module._configured_allowed_dirs = None
+    yield
+    session_module._configured_allowed_dirs = original
 
 
 class TestGenerateSessionId:
@@ -381,6 +391,27 @@ class TestValidateHostPath:
                 import os
 
                 assert result == os.path.realpath(str(test_file))
+
+    def test_allow_all_when_no_restriction_configured(self):
+        """When no restriction is active, any absolute path is allowed."""
+        import os
+
+        with tempfile.TemporaryDirectory() as outside:
+            test_file = Path(outside) / "file.txt"
+            test_file.write_text("ok")
+
+            # Clear both CLI config and env var to simulate "allow all"
+            with patch.dict("os.environ", {}, clear=True):
+                # Ensure no CLI config is set
+                import jupyter_interpreter_mcp.session as session_module
+
+                original_config = session_module._configured_allowed_dirs
+                try:
+                    session_module._configured_allowed_dirs = None
+                    result = validate_host_path(str(test_file))
+                    assert result == os.path.realpath(str(test_file))
+                finally:
+                    session_module._configured_allowed_dirs = original_config
 
 
 class TestIsSensitiveFile:
