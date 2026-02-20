@@ -302,7 +302,7 @@ In your `opencode.jsonc` (global config at `~/.config/opencode/opencode.json` or
 }
 ```
 
-For most use cases, either use the environment variable approach with hardcoded paths, or rely on the "allow all" default with sensitive file protection.
+For most use cases, either use the environment variable approach with hardcoded paths, or rely on the CWD-only default with sensitive file protection.
 
 #### Claude Desktop / Cursor
 
