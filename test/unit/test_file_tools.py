@@ -1,5 +1,6 @@
-"""Unit tests for the upload_file_path tool."""
+"""Unit tests for the upload_file_path and download_file tools."""
 
+import base64
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
@@ -8,6 +9,7 @@ import pytest
 
 import jupyter_interpreter_mcp.session as session_module
 from jupyter_interpreter_mcp import server
+from jupyter_interpreter_mcp.remote import JupyterConnectionError
 from jupyter_interpreter_mcp.session import Session
 
 
@@ -31,18 +33,21 @@ class TestUploadFilePath:
         )
         server.sessions = {session_id: session}
         server.session_ttl = 0
-
-        mock_notebook = Mock()
-        mock_notebook.execute_new_code = AsyncMock(
-            return_value={"error": [], "result": ["OK\n"]}
-        )
-        server.notebooks = {session_id: mock_notebook}
+        # jupyter_root is the parent of session_dir so relpath works correctly
+        server.jupyter_root = str(Path(session_dir).parent)
 
         mock_remote = Mock()
         mock_remote.update_session_metadata = AsyncMock()
+        mock_remote.check_exists = Mock(return_value=False)
+        mock_remote.create_directory = Mock()
+        mock_remote.put_contents = Mock(return_value={})
         server.remote_client = mock_remote
 
-        return mock_notebook
+        # Populate notebooks so ensure_session_available short-circuits
+        # without calling restore_sessions_from_disk (which requires AsyncMock)
+        server.notebooks = {session_id: Mock()}
+
+        return mock_remote
 
     @pytest.mark.asyncio
     async def test_successful_upload(self):
@@ -57,7 +62,7 @@ class TestUploadFilePath:
             session_dir = str(Path(tmpdir) / "session")
             Path(session_dir).mkdir()
 
-            mock_notebook = self._setup_server(server, session_dir)
+            self._setup_server(server, session_dir)
 
             with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
                 result = await server.upload_file_path(
@@ -70,8 +75,8 @@ class TestUploadFilePath:
             assert result["status"] == "success"
             assert "sandbox_path" in result
             assert result["size"] == str(host_file.stat().st_size)
-            # Verify notebook.execute_new_code was called for the upload
-            assert mock_notebook.execute_new_code.await_count >= 1
+            # Verify put_contents was called (Contents API upload)
+            server.remote_client.put_contents.assert_called_once()  # type: ignore [attr-defined]
 
     @pytest.mark.asyncio
     async def test_host_file_not_found(self):
@@ -160,12 +165,10 @@ class TestUploadFilePath:
             session_dir = str(Path(tmpdir) / "session")
             Path(session_dir).mkdir()
 
-            mock_notebook = self._setup_server(server, session_dir)
+            mock_remote = self._setup_server(server, session_dir)
 
-            # Simulate that destination exists
-            mock_notebook.execute_new_code = AsyncMock(
-                return_value={"error": [], "result": ["EXISTS\n"]}
-            )
+            # Simulate that destination exists via Contents API check
+            mock_remote.check_exists = Mock(return_value=True)
 
             with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
                 result = await server.upload_file_path(
@@ -190,10 +193,7 @@ class TestUploadFilePath:
             session_dir = str(Path(tmpdir) / "session")
             Path(session_dir).mkdir()
 
-            mock_notebook = self._setup_server(server, session_dir)
-            mock_notebook.execute_new_code = AsyncMock(
-                return_value={"error": [], "result": ["OK\n"]}
-            )
+            self._setup_server(server, session_dir)
 
             with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
                 result = await server.upload_file_path(
@@ -310,3 +310,195 @@ class TestUploadFilePath:
 
             assert "error" not in result
             assert result["status"] == "success"
+
+    @pytest.mark.asyncio
+    async def test_upload_uses_put_contents_not_kernel(self):
+        """Verify upload uses Contents API (put_contents), not kernel execution."""
+        from jupyter_interpreter_mcp import server
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            host_file = Path(tmpdir) / "data.txt"
+            host_file.write_text("hello")
+
+            session_dir = str(Path(tmpdir) / "session")
+            Path(session_dir).mkdir()
+
+            mock_remote = self._setup_server(server, session_dir)
+
+            with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
+                result = await server.upload_file_path(
+                    session_id="test-session",
+                    host_path=str(host_file),
+                    destination_path="data.txt",
+                )
+
+            assert "error" not in result
+            mock_remote.put_contents.assert_called_once()
+            # Verify format is base64
+            call_kwargs = mock_remote.put_contents.call_args
+            assert call_kwargs[1].get("format") == "base64" or (
+                len(call_kwargs[0]) >= 3 and call_kwargs[0][2] == "base64"
+            )
+
+
+class TestDownloadFile:
+    """Test download_file tool using Contents API."""
+
+    def setup_method(self):
+        """Reset global state before each test."""
+        session_module._configured_allowed_dirs = None
+
+    def _setup_server(
+        self, tmpdir: str, session_id: str = "test-session"
+    ) -> tuple[str, Mock]:
+        """Set up server module state for download tests.
+
+        Returns (session_dir, mock_remote_client).
+        """
+        import time
+
+        session_dir = str(Path(tmpdir) / "session")
+        Path(session_dir).mkdir(exist_ok=True)
+
+        session = Session(
+            id=session_id,
+            kernel_id="kernel-1",
+            created_at=time.time(),
+            last_access=time.time(),
+            directory=session_dir,
+        )
+        server.sessions = {session_id: session}
+        server.session_ttl = 0
+        server.jupyter_root = tmpdir  # root is the tmpdir
+
+        mock_remote = Mock()
+        mock_remote.update_session_metadata = AsyncMock()
+        server.remote_client = mock_remote
+
+        # Populate notebooks so ensure_session_available short-circuits
+        # without calling restore_sessions_from_disk (which requires AsyncMock)
+        server.notebooks = {session_id: Mock()}
+
+        return session_dir, mock_remote
+
+    @pytest.mark.asyncio
+    async def test_download_text_file_success(self):
+        """Download a text file returns content with encoding='text'."""
+        from jupyter_interpreter_mcp import server
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir, mock_remote = self._setup_server(tmpdir)
+
+            mock_remote.get_file_contents = Mock(
+                return_value={
+                    "name": "hello.txt",
+                    "format": "text",
+                    "content": "hello world\n",
+                }
+            )
+
+            result = await server.download_file(
+                session_id="test-session", path="hello.txt"
+            )
+
+        assert "error" not in result
+        assert result["encoding"] == "text"
+        assert result["content"] == "hello world\n"
+        assert result["filename"] == "hello.txt"
+
+    @pytest.mark.asyncio
+    async def test_download_binary_file_returns_base64(self):
+        """Download a binary file returns base64 encoding."""
+        from jupyter_interpreter_mcp import server
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir, mock_remote = self._setup_server(tmpdir)
+
+            # PNG magic bytes encoded as base64
+            png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+            b64_content = base64.b64encode(png_bytes).decode("ascii")
+
+            mock_remote.get_file_contents = Mock(
+                return_value={
+                    "name": "image.png",
+                    "format": "base64",
+                    "content": b64_content,
+                }
+            )
+
+            result = await server.download_file(
+                session_id="test-session", path="image.png"
+            )
+
+        assert "error" not in result
+        assert result["encoding"] == "base64"
+        assert result["content"] == b64_content
+        assert result["filename"] == "image.png"
+
+    @pytest.mark.asyncio
+    async def test_download_file_not_found(self):
+        """Download returns error when Contents API raises JupyterConnectionError."""
+        from jupyter_interpreter_mcp import server
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir, mock_remote = self._setup_server(tmpdir)
+
+            mock_remote.get_file_contents = Mock(
+                side_effect=JupyterConnectionError(
+                    "File not found: sessions/test-session/missing.txt"
+                )
+            )
+
+            result = await server.download_file(
+                session_id="test-session", path="missing.txt"
+            )
+
+        assert "error" in result
+        assert "File not found" in result["error"]
+        # Error message should use the user-facing path, not an internal API path
+        assert "missing.txt" in result["error"]
+        assert "sessions/" not in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_download_path_traversal_blocked(self):
+        """Download rejects paths that escape the session directory."""
+        from jupyter_interpreter_mcp import server
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self._setup_server(tmpdir)
+
+            result = await server.download_file(
+                session_id="test-session", path="../../../etc/passwd"
+            )
+
+        assert "error" in result
+        assert "escapes session directory" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_download_uses_contents_api_not_kernel(self):
+        """Verify download_file calls get_file_contents, not kernel execution."""
+        from jupyter_interpreter_mcp import server
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_dir, mock_remote = self._setup_server(tmpdir)
+
+            mock_remote.get_file_contents = Mock(
+                return_value={
+                    "name": "data.csv",
+                    "format": "text",
+                    "content": "a,b\n1,2\n",
+                }
+            )
+
+            result = await server.download_file(
+                session_id="test-session", path="data.csv"
+            )
+
+        assert "error" not in result
+        mock_remote.get_file_contents.assert_called_once()
+        # Verify the API path was derived correctly (relative to jupyter_root)
+        call_args = mock_remote.get_file_contents.call_args[0][0]
+        assert "session" in call_args
+        assert "data.csv" in call_args
+        # Verify remote_client.execute was NOT called (no kernel interaction)
+        mock_remote.execute.assert_not_called()

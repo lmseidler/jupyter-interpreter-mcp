@@ -6,18 +6,19 @@ import time
 import uuid
 from dataclasses import dataclass
 
-# Module-level state for configured allowed upload directories
+# Module-level state for configured allowed upload directories.
+# None  = not explicitly set; fall back to ALLOWED_UPLOAD_DIRS env var or CWD.
+# []    = allow all (set via --allow-all).
+# [..] = restrict to these resolved absolute paths.
 _configured_allowed_dirs: list[str] | None = None
 
 
 def set_allowed_upload_dirs(dirs: list[str]) -> None:
-    """Set the allowed upload directories programmatically.
+    """Set the allowed upload directories, taking precedence over the env var.
 
-    This is typically called from command-line arguments in the server's
-    main() function. When set, these directories take precedence over the
-    ALLOWED_UPLOAD_DIRS environment variable.
+    Paths are resolved (symlinks followed) at set time.
 
-    :param dirs: List of absolute directory paths to allow uploads from.
+    :param dirs: Directory paths to allow uploads from.
     :type dirs: list[str]
     """
     global _configured_allowed_dirs
@@ -62,54 +63,27 @@ def validate_path(session_dir: str, relative_path: str) -> str:
 
 
 def get_allowed_upload_dirs() -> list[str]:
-    """Get the list of allowed directories for host file uploads.
+    """Return the configured allowed upload directories.
 
-    Checks three sources in order of precedence:
+    Priority:
+    1. Explicit config set via :func:`set_allowed_upload_dirs` (e.g. CLI args).
+    2. ``ALLOWED_UPLOAD_DIRS`` environment variable (colon-separated paths).
+    3. Current working directory as the sole default.
 
-    1. Configured directories via :func:`set_allowed_upload_dirs` (from CLI args)
-    2. ``ALLOWED_UPLOAD_DIRS`` environment variable (colon-separated paths)
-    3. Falls back to the current working directory
+    An empty list (``[]``) means *all* directories are allowed (set via
+    ``--allow-all``).
 
-    To check whether an explicit restriction is configured (vs. the CWD
-    fallback), use :func:`is_upload_dir_restriction_active`.
-
-    :return: List of absolute, resolved directory paths.
+    :return: List of resolved absolute directory paths, or ``[]`` for allow-all.
     :rtype: list[str]
     """
-    global _configured_allowed_dirs
-
-    # Precedence 1: CLI-configured directories
     if _configured_allowed_dirs is not None:
         return _configured_allowed_dirs
 
-    # Precedence 2: Environment variable
     env_value = os.environ.get("ALLOWED_UPLOAD_DIRS", "").strip()
     if env_value:
         return [os.path.realpath(d.strip()) for d in env_value.split(":") if d.strip()]
 
-    # Precedence 3: Fall back to CWD
     return [os.path.realpath(os.getcwd())]
-
-
-def is_upload_dir_restriction_active() -> bool:
-    """Check whether an explicit upload directory restriction is configured.
-
-    Returns ``True`` if directories have been set via CLI arguments
-    (:func:`set_allowed_upload_dirs`) or the ``ALLOWED_UPLOAD_DIRS``
-    environment variable.  Returns ``False`` when the only source would
-    be the CWD fallback, indicating that no explicit restriction was
-    configured and uploads should be allowed from any directory.
-
-    :return: Whether an explicit restriction is active.
-    :rtype: bool
-    """
-    global _configured_allowed_dirs
-
-    if _configured_allowed_dirs is not None:
-        return True
-
-    env_value = os.environ.get("ALLOWED_UPLOAD_DIRS", "").strip()
-    return bool(env_value)
 
 
 def validate_host_path(host_path: str, allowed_dirs: list[str] | None = None) -> str:
@@ -118,18 +92,16 @@ def validate_host_path(host_path: str, allowed_dirs: list[str] | None = None) ->
     The path must be absolute.  After resolving symlinks the resolved path
     must fall inside one of the *allowed_dirs*.
 
-    When *allowed_dirs* is not explicitly provided, the function checks
-    whether an upload directory restriction is active (via CLI args or
-    the ``ALLOWED_UPLOAD_DIRS`` environment variable).  If no restriction
-    is configured, any absolute path is accepted.  If a restriction is
-    configured, the path must reside within the configured directories.
+    When *allowed_dirs* is ``None`` (default), the configured allowed
+    directories are used.  If no explicit configuration is active (neither
+    :func:`set_allowed_upload_dirs` nor ``ALLOWED_UPLOAD_DIRS`` env var), any
+    absolute path is accepted.  An empty *allowed_dirs* list also accepts all
+    absolute paths (equivalent to ``--allow-all``).
 
     :param host_path: Absolute path on the host filesystem.
     :type host_path: str
-    :param allowed_dirs: Directories the path must reside within.
-        When explicitly provided, enforcement is always applied.
-        When ``None`` (default), behaviour depends on whether a
-        restriction is configured.
+    :param allowed_dirs: Directories the path must reside within, or ``None``
+        to use the globally configured directories.
     :type allowed_dirs: list[str] | None
     :return: The resolved absolute path.
     :rtype: str
@@ -142,14 +114,17 @@ def validate_host_path(host_path: str, allowed_dirs: list[str] | None = None) ->
     resolved = os.path.realpath(host_path)
 
     if allowed_dirs is None:
-        # No explicit dirs passed — check if a restriction is configured
-        if not is_upload_dir_restriction_active():
+        # No explicit restriction configured and no env var → allow all
+        if not _configured_allowed_dirs and not os.environ.get("ALLOWED_UPLOAD_DIRS"):
             return resolved
         allowed_dirs = get_allowed_upload_dirs()
 
+    # Empty list means allow-all (e.g. --allow-all)
+    if not allowed_dirs:
+        return resolved
+
     for allowed in allowed_dirs:
-        allowed_real = os.path.realpath(allowed)
-        if resolved == allowed_real or resolved.startswith(allowed_real + os.sep):
+        if resolved == allowed or resolved.startswith(allowed + os.sep):
             return resolved
 
     raise ValueError(f"Path '{host_path}' is outside allowed upload directories")
