@@ -21,7 +21,7 @@ from jupyter_interpreter_mcp.session import Session
 # Global variables initialized in main()
 remote_client: RemoteJupyterClient = None  # type: ignore
 sessions_dir: str = os.getenv("SESSIONS_DIR", "/home/jovyan/sessions")
-session_ttl: float = float(os.getenv("SESSION_TTL", "3600"))
+session_ttl: float = float(os.getenv("SESSION_TTL", "0"))
 
 mcp = FastMCP(
     name="Code Interpreter",
