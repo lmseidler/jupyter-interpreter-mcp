@@ -740,12 +740,41 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
         else:
             validated_path = session.directory
 
-        # Derive Jupyter root from sessions_dir
-        # (e.g. /home/jovyan/sessions -> /home/jovyan)
-        # Note: We assume sessions_dir is a subdirectory of the Jupyter root.
-        jupyter_root = os.path.dirname(sessions_dir.rstrip("/"))
-        api_path = os.path.relpath(validated_path, jupyter_root)
+        # Derive Jupyter root and validate paths
+        # Treat the Jupyter root as the current working directory and ensure
+        # that both sessions_dir and the validated_path live under it.
+        jupyter_root_abs = os.path.abspath(os.getcwd())
+        sessions_dir_abs = os.path.abspath(sessions_dir)
+        validated_abs = os.path.abspath(validated_path)
 
+        try:
+            # Ensure sessions_dir is under the Jupyter root
+            if os.path.commonpath([jupyter_root_abs, sessions_dir_abs]) != jupyter_root_abs:
+                return {
+                    "error": (
+                        f"sessions_dir ({sessions_dir_abs}) is not under the Jupyter root "
+                        f"({jupyter_root_abs}); please check configuration."
+                    ),
+                    "result": [],
+                }
+
+            # Ensure the requested path is also under the Jupyter root
+            if os.path.commonpath([jupyter_root_abs, validated_abs]) != jupyter_root_abs:
+                return {
+                    "error": (
+                        f"Path {validated_abs} is outside the Jupyter root "
+                        f"({jupyter_root_abs}); refusing to access it."
+                    ),
+                    "result": [],
+                }
+        except ValueError:
+            # Paths on different drives or otherwise incomparable
+            return {
+                "error": "Invalid path configuration: sessions_dir and Jupyter root are incompatible.",
+                "result": [],
+            }
+
+        api_path = os.path.relpath(validated_abs, jupyter_root_abs)
         # Get contents via Jupyter Contents API
         # Using sync method from RemoteJupyterClient as per codebase pattern
         response = remote_client.get_contents(api_path)
