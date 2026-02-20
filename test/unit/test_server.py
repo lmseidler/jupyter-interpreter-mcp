@@ -348,8 +348,9 @@ class TestListDirTool:
     @patch("jupyter_interpreter_mcp.server.remote_client")
     @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
     @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
     async def test_list_dir_success(
-        self, mock_sessions, mock_remote_client, mock_ensure
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
     ):
         """Test successful directory listing."""
         import time
@@ -403,8 +404,9 @@ class TestListDirTool:
     @patch("jupyter_interpreter_mcp.server.remote_client")
     @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
     @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
     async def test_list_dir_empty_directory(
-        self, mock_sessions, mock_remote_client, mock_ensure
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
     ):
         """Test listing an empty directory."""
         import time
@@ -433,8 +435,10 @@ class TestListDirTool:
     @patch("jupyter_interpreter_mcp.server.ensure_session_available")
     @patch("jupyter_interpreter_mcp.server.remote_client")
     @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
     async def test_list_dir_not_found(
-        self, mock_sessions, mock_remote_client, mock_ensure
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
     ):
         """Test directory not found."""
         import time
@@ -461,8 +465,10 @@ class TestListDirTool:
     @patch("jupyter_interpreter_mcp.server.ensure_session_available")
     @patch("jupyter_interpreter_mcp.server.remote_client")
     @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
     async def test_list_dir_permission_denied(
-        self, mock_sessions, mock_remote_client, mock_ensure
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
     ):
         """Test permission denied."""
         import time
