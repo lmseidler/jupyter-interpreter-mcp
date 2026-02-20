@@ -14,6 +14,10 @@ from jupyter_interpreter_mcp.session import Session
 class TestUploadFilePath:
     """Test upload_file_path tool functionality."""
 
+    def setup_method(self):
+        """Reset global allowed upload dirs before each test to avoid state leakage."""
+        session_module._configured_allowed_dirs = None
+
     def _setup_server(self, server, session_dir: str, session_id: str = "test-session"):
         """Set up server module state for testing."""
         import time
