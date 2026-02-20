@@ -286,8 +286,8 @@ class TestUploadFilePath:
                 session_module._configured_allowed_dirs = original_config
 
     @pytest.mark.asyncio
-    async def test_allow_all_uploads_when_configured(self):
-        """6.10 - Allow all uploads when explicitly configured via env."""
+    async def test_allow_uploads_from_env_configured_dirs(self):
+        """6.10 - Allow uploads from env-configured directories."""
         from jupyter_interpreter_mcp import server
 
         with tempfile.TemporaryDirectory() as tmpdir:
