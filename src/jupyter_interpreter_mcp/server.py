@@ -123,23 +123,17 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
     """
     global sessions, notebooks, remote_client, sessions_dir, jupyter_root, session_ttl
 
-    # Compute the Contents API path for the sessions directory, ensuring it is
-    # within the configured Jupyter root. _to_api_path will raise ValueError
-    # if the path is invalid or outside the allowed root.
+    # List session directories via the Contents API. get_contents accepts
+    # absolute paths and validates that the path is within jupyter_root,
+    # raising ValueError if not.
     try:
-        sessions_api_path = remote_client._to_api_path(
-            posixpath.normpath(sessions_dir),
-        )
+        contents = remote_client.get_contents(posixpath.normpath(sessions_dir))
     except ValueError as e:
         print(
             f"Invalid sessions directory '{sessions_dir}': {e}",
             file=sys.stderr,
         )
         return 0
-
-    # List session directories via the Contents API
-    try:
-        contents = remote_client.get_contents(sessions_api_path)
     except JupyterConnectionError:
         # Sessions directory does not exist yet — nothing to restore
         return 0
@@ -155,7 +149,8 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
         name = entry["name"]
         if target_session_id and name != target_session_id:
             continue
-        meta_api_path = f"{sessions_api_path}/{name}/session_meta.json"
+        session_abs_dir = posixpath.join(posixpath.normpath(sessions_dir), name)
+        meta_api_path = posixpath.join(session_abs_dir, "session_meta.json")
         try:
             # Primary attempt: use the current metadata filename.
             meta_contents = remote_client.get_file_contents(meta_api_path)
@@ -164,8 +159,7 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
             # in the session directory (from previous versions that used a different
             # metadata filename).
             try:
-                session_dir_api_path = f"{sessions_api_path}/{name}"
-                session_dir_contents = remote_client.get_contents(session_dir_api_path)
+                session_dir_contents = remote_client.get_contents(session_abs_dir)
                 legacy_meta_name: str | None = None
                 for item in session_dir_contents.get("content", []):
                     if item.get("type") == "file" and item.get("name", "").endswith(
@@ -177,7 +171,7 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
                     raise JupyterConnectionError(
                         f"No metadata JSON file found for session {name}"
                     )
-                legacy_meta_api_path = f"{sessions_api_path}/{name}/{legacy_meta_name}"
+                legacy_meta_api_path = posixpath.join(session_abs_dir, legacy_meta_name)
                 meta_contents = remote_client.get_file_contents(legacy_meta_api_path)
             except Exception as e:
                 print(

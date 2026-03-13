@@ -197,12 +197,8 @@ class TestLoadFromFile:
         )
         await notebook.connect()
 
-        # Mock get_file_contents to raise JupyterConnectionError (file not found)
-        from jupyter_interpreter_mcp.remote import JupyterConnectionError
-
-        mock_remote_client.get_file_contents.side_effect = JupyterConnectionError(
-            "Not found"
-        )
+        # Mock check_exists to return False (file does not exist → fresh session)
+        mock_remote_client.check_exists.return_value = False
 
         result = await notebook.load_from_file()
 

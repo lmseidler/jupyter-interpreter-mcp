@@ -82,9 +82,8 @@ class Notebook:
         Writes the history file directly via the Jupyter Contents API without
         executing code on the kernel.
         """
-        api_path = self.remote_client._to_api_path(self.file_path)
         content = "".join(line + "\n" for line in self.history)
-        self.remote_client.put_contents(api_path, content, format="text")
+        self.remote_client.put_contents(self.file_path, content, format="text")
 
     async def load_from_file(self) -> bool:
         """Loads and re-executes code from the session history file.
@@ -101,12 +100,11 @@ class Notebook:
         if self.kernel_id is None:
             raise RuntimeError("Notebook is not connected. Call connect() first.")
 
-        api_path = self.remote_client._to_api_path(self.file_path)
         try:
             # First, explicitly check whether the history file exists. Only a confirmed
             # "not found" should be treated as a benign fresh-session condition.
             try:
-                if not self.remote_client.check_exists(api_path):
+                if not self.remote_client.check_exists(self.file_path):
                     # File does not exist — fresh session with no prior history.
                     self.history = []
                     return True
@@ -115,7 +113,7 @@ class Notebook:
                 # do not treat as file-not-found.
                 return False
 
-            contents = self.remote_client.get_file_contents(api_path)
+            contents = self.remote_client.get_file_contents(self.file_path)
         except JupyterConnectionError:
             # Connectivity issue while fetching contents; treat as a load failure.
             return False
