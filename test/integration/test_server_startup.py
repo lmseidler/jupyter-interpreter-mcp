@@ -32,7 +32,9 @@ class TestServerStartup:
 
         # Verify client was initialized with correct parameters
         mock_client_class.assert_called_once_with(
-            base_url="http://test:8888", auth_token="test-token"
+            base_url="http://test:8888",
+            auth_token="test-token",
+            jupyter_root="/home/jovyan",
         )
         mock_client.validate_connection.assert_called_once()
         mock_mcp.run.assert_called_once()
@@ -63,7 +65,9 @@ class TestServerStartup:
 
         # Verify client was initialized with env var values
         mock_client_class.assert_called_once_with(
-            base_url="http://env:8888", auth_token="env-token"
+            base_url="http://env:8888",
+            auth_token="env-token",
+            jupyter_root="/home/jovyan",
         )
         mock_client.validate_connection.assert_called_once()
         mock_mcp.run.assert_called_once()
@@ -97,7 +101,9 @@ class TestServerStartup:
 
         # Verify CLI token overrode env token, but env base_url was used
         mock_client_class.assert_called_once_with(
-            base_url="http://env:8888", auth_token="cli-token"
+            base_url="http://env:8888",
+            auth_token="cli-token",
+            jupyter_root="/home/jovyan",
         )
         mock_client.validate_connection.assert_called_once()
         mock_mcp.run.assert_called_once()

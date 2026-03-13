@@ -56,21 +56,9 @@ async def test_session_restoration_does_not_duplicate_history(mock_remote_client
     await notebook2.connect()
 
     # Mock the file read to return the saved history
-    call_count = [0]
-
-    async def mock_execute_for_restore(kernel_id, code):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            # First call: reading the file content (the file reading code itself)
-            return {
-                "error": [],
-                "result": ["FILE_CONTENT_START\n\nx = 10\nFILE_CONTENT_END\n"],
-            }
-        else:
-            # Second call: re-executing the restored content
-            return {"error": [], "result": ["10\n"]}
-
-    mock_remote_client.execute.side_effect = mock_execute_for_restore
+    mock_remote_client.get_file_contents.return_value = {"content": "\nx = 10\n"}
+    mock_remote_client.execute.side_effect = None
+    mock_remote_client.execute.return_value = {"error": [], "result": ["10\n"]}
 
     # Load from file (simulating session restoration)
     result = await notebook2.load_from_file()
@@ -130,24 +118,12 @@ async def test_multiple_restorations_do_not_multiply_history(mock_remote_client)
     await notebook2.connect()
 
     # Mock restoration
-    call_count = [0]
-
-    async def mock_execute_cycle1(kernel_id, code):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return {
-                "error": [],
-                "result": ["FILE_CONTENT_START\n\na = 1\nFILE_CONTENT_END\n"],
-            }
-        else:
-            return {"error": [], "result": []}
-
-    mock_remote_client.execute.side_effect = mock_execute_cycle1
+    mock_remote_client.get_file_contents.return_value = {"content": "\na = 1\n"}
+    mock_remote_client.execute.side_effect = None
+    mock_remote_client.execute.return_value = {"error": [], "result": []}
     await notebook2.load_from_file()
 
     # Execute new code
-    call_count[0] = 0
-    mock_remote_client.execute.side_effect = None
     mock_remote_client.execute.return_value = {"error": [], "result": []}
     await notebook2.execute_new_code("b = 2")
 
@@ -165,20 +141,8 @@ async def test_multiple_restorations_do_not_multiply_history(mock_remote_client)
 
     # The bug would cause the file to contain duplicated "a = 1"
     # Our fix ensures it's only executed, not added to history
-    call_count2 = [0]
-
-    async def mock_execute_cycle2(kernel_id, code):
-        call_count2[0] += 1
-        if call_count2[0] == 1:
-            # This would be the problematic case if history was duplicated
-            return {
-                "error": [],
-                "result": ["FILE_CONTENT_START\n\nb = 2\nFILE_CONTENT_END\n"],
-            }
-        else:
-            return {"error": [], "result": []}
-
-    mock_remote_client.execute.side_effect = mock_execute_cycle2
+    mock_remote_client.get_file_contents.return_value = {"content": "\nb = 2\n"}
+    mock_remote_client.execute.return_value = {"error": [], "result": []}
     await notebook3.load_from_file()
 
     # After restoration, history should only have the read code

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import posixpath
 import uuid
 from typing import Any, cast
 from urllib.parse import urljoin, urlparse
@@ -42,6 +43,7 @@ class RemoteJupyterClient:
         base_url: str,
         auth_token: str,
         timeout: int = 30,
+        jupyter_root: str = "/home/jovyan",
     ) -> None:
         """Initialize the remote Jupyter client.
 
@@ -51,10 +53,37 @@ class RemoteJupyterClient:
         :type auth_token: str
         :param timeout: HTTP request timeout in seconds
         :type timeout: int
+        :param jupyter_root: Absolute path to the Jupyter server root on the remote
+            filesystem (e.g., ``'/home/jovyan'``).  Used to convert absolute paths
+            to Contents API-relative paths.
+        :type jupyter_root: str
         """
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
         self.timeout = timeout
+        self.jupyter_root = jupyter_root
+
+    def _to_api_path(self, absolute_path: str) -> str:
+        """Convert an absolute remote filesystem path to a Contents API path.
+
+        The Contents API uses paths relative to ``jupyter_root``.  This helper
+        normalises *absolute_path* and expresses it relative to
+        ``self.jupyter_root``.
+
+        :param absolute_path: Absolute path on the remote filesystem.
+        :type absolute_path: str
+        :return: Path suitable for use with the Contents API (no leading slash).
+        :rtype: str
+        :raises ValueError: If *absolute_path* is outside ``self.jupyter_root``.
+        """
+        jupyter_root_abs = posixpath.normpath(self.jupyter_root)
+        abs_path = posixpath.normpath(absolute_path)
+        api_path = posixpath.relpath(abs_path, jupyter_root_abs)
+        if api_path.startswith(".."):
+            raise ValueError(
+                f"Path {absolute_path!r} is outside jupyter_root {self.jupyter_root!r}"
+            )
+        return api_path
 
     def _get_auth_headers(self) -> dict[str, str]:
         """Build authentication headers for requests.
@@ -356,74 +385,53 @@ class RemoteJupyterClient:
         return {"error": error, "result": result}
 
     async def create_session_directory(
-        self, kernel_id: str, session_dir: str, created_at: float, last_access: float
+        self, session_dir: str, created_at: float, last_access: float
     ) -> None:
-        """Create a session directory with metadata file via kernel execution.
+        """Create a session directory with metadata file via the Contents API.
 
-        :param kernel_id: ID of the kernel to execute code in
-        :type kernel_id: str
-        :param session_dir: Path to session directory
+        :param session_dir: Absolute path to the session directory on the remote
+            filesystem.
         :type session_dir: str
-        :param created_at: Session creation timestamp
+        :param created_at: Session creation timestamp.
         :type created_at: float
-        :param last_access: Session last access timestamp
+        :param last_access: Session last access timestamp.
         :type last_access: float
-        :raises JupyterExecutionError: If directory creation fails
+        :raises JupyterConnectionError: If the Contents API call fails.
+        :raises ValueError: If *session_dir* is outside ``self.jupyter_root``.
         """
-        code = f"""
-import os
-import json
-
-# Create session directory
-os.makedirs({repr(session_dir)}, exist_ok=True)
-
-# Create metadata file
-metadata = {{
-    'created_at': {created_at},
-    'last_access': {last_access}
-}}
-with open(os.path.join({repr(session_dir)}, '.session.json'), 'w') as f:
-    json.dump(metadata, f, indent=2)
-"""
-        result = await self.execute(kernel_id, code)
-        if result["error"]:
-            raise JupyterExecutionError(
-                f"Failed to create session directory: {'; '.join(result['error'])}"
-            )
+        api_path = self._to_api_path(session_dir)
+        self.create_directory(api_path)
+        metadata = json.dumps(
+            {"created_at": created_at, "last_access": last_access}, indent=2
+        )
+        self.put_contents(f"{api_path}/session_meta.json", metadata, format="text")
 
     async def update_session_metadata(
-        self, kernel_id: str, session_dir: str, last_access: float
+        self, session_dir: str, last_access: float
     ) -> None:
         """Update session metadata file with new last_access timestamp.
 
-        :param kernel_id: ID of the kernel to execute code in
-        :type kernel_id: str
-        :param session_dir: Path to session directory
+        Reads ``session_meta.json`` from the session directory via the Contents
+        API, updates ``last_access``, and writes it back.  If the metadata file
+        does not yet exist a new one is created with only ``last_access`` set.
+
+        :param session_dir: Absolute path to the session directory on the remote
+            filesystem.
         :type session_dir: str
-        :param last_access: New last access timestamp
+        :param last_access: New last access timestamp.
         :type last_access: float
-        :raises JupyterExecutionError: If update fails
+        :raises JupyterConnectionError: If the Contents API call fails.
+        :raises ValueError: If *session_dir* is outside ``self.jupyter_root``.
         """
-        code = f"""
-import os
-import json
-
-metadata_path = os.path.join({repr(session_dir)}, '.session.json')
-if not os.path.exists(metadata_path):
-    raise FileNotFoundError(f"Session metadata file not found: {{metadata_path}}")
-
-with open(metadata_path, 'r') as f:
-    metadata = json.load(f)
-metadata['last_access'] = {last_access}
-with open(metadata_path, 'w') as f:
-    json.dump(metadata, f, indent=2)
-print("Metadata updated successfully")
-"""
-        result = await self.execute(kernel_id, code)
-        if result["error"]:
-            raise JupyterExecutionError(
-                f"Failed to update session metadata: {'; '.join(result['error'])}"
-            )
+        api_path = self._to_api_path(session_dir)
+        meta_path = f"{api_path}/session_meta.json"
+        try:
+            contents = self.get_file_contents(meta_path)
+            metadata = json.loads(contents["content"])
+        except JupyterConnectionError:
+            metadata = {}
+        metadata["last_access"] = last_access
+        self.put_contents(meta_path, json.dumps(metadata, indent=2), format="text")
 
     def get_contents(self, path: str) -> dict[str, Any]:
         """Get directory or file information from Jupyter Contents API.

@@ -1,7 +1,7 @@
 import logging
 import os
 
-from jupyter_interpreter_mcp.remote import RemoteJupyterClient
+from jupyter_interpreter_mcp.remote import JupyterConnectionError, RemoteJupyterClient
 
 logger = logging.getLogger(__name__)
 
@@ -79,89 +79,52 @@ class Notebook:
     async def dump_to_file(self) -> None:
         """Saves the execution history to a file on the remote filesystem.
 
-        Executes Python code in the kernel to write the history to the
-        remote container filesystem.
-
-        Raises:
-            RuntimeError: If the notebook is not connected.
+        Writes the history file directly via the Jupyter Contents API without
+        executing code on the kernel.
         """
-        if self.kernel_id is None:
-            raise RuntimeError("Notebook is not connected. Call connect() first.")
-
-        # Generate code to write history to remote file
-        code = f"""
-import os
-os.makedirs(os.path.dirname({repr(self.file_path)}), exist_ok=True)
-with open({repr(self.file_path)}, 'w') as f:
-    for line in {repr(self.history)}:
-        f.write(line + '\\n')
-"""
-        # Execute in the kernel (we can ignore the output)
-        await self.remote_client.execute(self.kernel_id, code)
+        api_path = self.remote_client._to_api_path(self.file_path)
+        content = "".join(line + "\n" for line in self.history)
+        self.remote_client.put_contents(api_path, content, format="text")
 
     async def load_from_file(self) -> bool:
         """Loads and re-executes code from the session history file.
 
-        Attempts to read the session file from the remote container and execute
-        its contents to restore the kernel state. The restored code is executed
-        but NOT added to history again (it's already in the saved history).
+        Reads the history file via the Jupyter Contents API and re-executes
+        its content to restore the kernel state.  The restored code is executed
+        but NOT added to history again (it is already in the saved history).
 
-        :return: True if the file was successfully loaded and executed,
-            False if an error occurred.
+        :return: True if the file was successfully loaded and executed (or if
+            no history file exists yet), False if an error occurred.
         :rtype: bool
         :raises RuntimeError: If the notebook is not connected.
         """
         if self.kernel_id is None:
             raise RuntimeError("Notebook is not connected. Call connect() first.")
 
-        # Generate code to read history from remote file
-        code = f"""
-import os
-if os.path.exists({repr(self.file_path)}):
-    with open({repr(self.file_path)}, 'r') as f:
-        content = f.read()
-    print('FILE_CONTENT_START')
-    print(content, end='')
-    print('FILE_CONTENT_END')
-else:
-    print('FILE_NOT_FOUND')
-"""
+        api_path = self.remote_client._to_api_path(self.file_path)
         try:
-            # Use remote_client.execute directly to avoid adding
-            # load helper code to history
-            result = await self.remote_client.execute(self.kernel_id, code)
-            if result["error"]:
-                return False
-
-            output = "".join(result["result"])
-
-            if "FILE_NOT_FOUND" in output:
-                self.history = []
-                return True
-
-            # Extract file content between markers
-            start_marker = "FILE_CONTENT_START"
-            end_marker = "FILE_CONTENT_END"
-
-            if start_marker in output and end_marker in output:
-                start_idx = output.index(start_marker) + len(start_marker)
-                end_idx = output.index(end_marker)
-                file_content = output[start_idx:end_idx].strip()
-
-                # Execute the file content to restore state
-                # Use remote_client.execute directly to avoid adding to history again
-                if file_content:
-                    self.history = [file_content]
-                    restore_result = await self.remote_client.execute(
-                        self.kernel_id, file_content
-                    )
-                    return len(restore_result["error"]) == 0
-                self.history = []
-                return True
-
-            return False
+            contents = self.remote_client.get_file_contents(api_path)
+        except JupyterConnectionError:
+            # File not found — fresh session with no prior history
+            self.history = []
+            return True
         except Exception:
             return False
+
+        file_content = contents["content"].strip()
+
+        if file_content:
+            self.history = [file_content]
+            try:
+                restore_result = await self.remote_client.execute(
+                    self.kernel_id, file_content
+                )
+                return len(restore_result["error"]) == 0
+            except Exception:
+                return False
+
+        self.history = []
+        return True
 
     # TODO abstract out creating a new client
     def close(self) -> None:

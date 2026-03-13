@@ -76,7 +76,9 @@ class TestConfigurationPrecedence:
 
         # Verify CLI args were used (not env vars)
         mock_client_class.assert_called_once_with(
-            base_url="http://cli-url:9999", auth_token="cli-token"
+            base_url="http://cli-url:9999",
+            auth_token="cli-token",
+            jupyter_root="/home/jovyan",
         )
 
     @patch("jupyter_interpreter_mcp.server.RemoteJupyterClient")
@@ -102,7 +104,9 @@ class TestConfigurationPrecedence:
 
         # Verify env vars were used
         mock_client_class.assert_called_once_with(
-            base_url="http://env-url:8888", auth_token="env-token"
+            base_url="http://env-url:8888",
+            auth_token="env-token",
+            jupyter_root="/home/jovyan",
         )
 
     @patch("jupyter_interpreter_mcp.server.load_dotenv")
@@ -124,7 +128,9 @@ class TestConfigurationPrecedence:
 
         # Verify defaults were used for base_url
         mock_client_class.assert_called_once_with(
-            base_url="http://localhost:8888", auth_token="test-token"
+            base_url="http://localhost:8888",
+            auth_token="test-token",
+            jupyter_root="/home/jovyan",
         )
 
     @patch("jupyter_interpreter_mcp.server.RemoteJupyterClient")
@@ -156,7 +162,9 @@ class TestConfigurationPrecedence:
 
         # Verify CLI token was used, but env base_url was used
         mock_client_class.assert_called_once_with(
-            base_url="http://env-url:8888", auth_token="cli-token"
+            base_url="http://env-url:8888",
+            auth_token="cli-token",
+            jupyter_root="/home/jovyan",
         )
 
 

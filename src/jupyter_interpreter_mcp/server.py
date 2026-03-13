@@ -111,8 +111,9 @@ async def cleanup_expired_sessions() -> int:
 async def restore_sessions_from_disk(target_session_id: str | None = None) -> int:
     """Restore existing sessions from disk on server startup.
 
-    Scans the sessions directory for existing session folders, reads their
-    metadata, creates new kernels, and populates the sessions registry.
+    Scans the sessions directory for existing session folders via the Jupyter
+    Contents API, reads their metadata, creates new kernels, and populates the
+    sessions registry.
 
     :param target_session_id: Optional specific session ID to restore.
         If provided, only that session is considered.
@@ -120,148 +121,128 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
     :return: Number of sessions restored.
     :rtype: int
     """
-    global sessions, notebooks, remote_client, sessions_dir, session_ttl
+    global sessions, notebooks, remote_client, sessions_dir, jupyter_root, session_ttl
 
-    # Create a temporary kernel to list session directories
-    temp_kernel_id = None
+    # Compute the Contents API path for the sessions directory
+    sessions_api_path = posixpath.relpath(
+        posixpath.normpath(sessions_dir),
+        posixpath.normpath(jupyter_root),
+    )
+
+    # List session directories via the Contents API
     try:
-        temp_kernel_id = remote_client.create_kernel()
-    except Exception as e:
-        print(f"Error creating temporary kernel for restoration: {e}", file=sys.stderr)
+        contents = remote_client.get_contents(sessions_api_path)
+    except JupyterConnectionError:
+        # Sessions directory does not exist yet — nothing to restore
         return 0
+    except Exception as e:
+        print(f"Error listing sessions directory: {e}", file=sys.stderr)
+        return 0
+
+    # Collect metadata for each valid session directory
+    sessions_to_restore: list[dict] = []
+    for entry in contents.get("content", []):
+        if entry.get("type") != "directory":
+            continue
+        name = entry["name"]
+        if target_session_id and name != target_session_id:
+            continue
+        meta_api_path = f"{sessions_api_path}/{name}/session_meta.json"
+        try:
+            meta_contents = remote_client.get_file_contents(meta_api_path)
+            metadata = json.loads(meta_contents["content"])
+            sessions_to_restore.append(
+                {
+                    "session_id": name,
+                    "created_at": metadata.get("created_at"),
+                    "last_access": metadata.get("last_access"),
+                    "directory": posixpath.join(posixpath.normpath(sessions_dir), name),
+                }
+            )
+        except (JupyterConnectionError, json.JSONDecodeError, KeyError) as e:
+            print(
+                f"Skipping {name}: could not read session metadata ({e})",
+                file=sys.stderr,
+            )
+            continue
 
     restored_count = 0
 
-    try:
-        # Execute code to list session directories
-        list_code = f"""
-import os
-import json
+    for meta in sessions_to_restore:
+        session_id = meta["session_id"]
+        created_at = meta["created_at"]
+        last_access = meta["last_access"]
+        session_directory = meta["directory"]
 
-sessions_dir = {repr(sessions_dir)}
-target_session_id = {repr(target_session_id)}
-result = []
+        # Double-checked locking to prevent duplicate restoration
+        async with registry_lock:
+            if session_id in sessions:
+                continue
 
-if os.path.exists(sessions_dir):
-    for item in os.listdir(sessions_dir):
-        if target_session_id and item != target_session_id:
+        if created_at is None or last_access is None:
+            print(f"Skipping {session_id}: invalid metadata")
             continue
-        item_path = os.path.join(sessions_dir, item)
-        if os.path.isdir(item_path):
-            metadata_path = os.path.join(item_path, '.session.json')
-            if os.path.exists(metadata_path):
-                with open(metadata_path, 'r') as f:
-                    metadata = json.load(f)
-                result.append({{
-                    'session_id': item,
-                    'created_at': metadata.get('created_at'),
-                    'last_access': metadata.get('last_access'),
-                    'directory': item_path
-                }})
 
-print("SESSION_LIST_START")
-print(json.dumps(result))
-print("SESSION_LIST_END")
-"""
-        result = await remote_client.execute(temp_kernel_id, list_code)
-        if result["error"]:
-            print(
-                f"Error listing sessions: {'; '.join(result['error'])}", file=sys.stderr
-            )
-            return 0
-
-        output = "".join(result["result"])
-        if "SESSION_LIST_START" not in output or "SESSION_LIST_END" not in output:
-            return 0
-
-        start_idx = output.index("SESSION_LIST_START") + len("SESSION_LIST_START")
-        end_idx = output.index("SESSION_LIST_END")
-        sessions_json = output[start_idx:end_idx].strip()
-        sessions_to_restore = json.loads(sessions_json)
-
-        for meta in sessions_to_restore:
-            session_id = meta["session_id"]
-            created_at = meta["created_at"]
-            last_access = meta["last_access"]
-            session_directory = meta["directory"]
-
-            # Double-checked locking to prevent duplicate restoration
-            async with registry_lock:
-                if session_id in sessions:
-                    continue
-
-            if created_at is None or last_access is None:
-                print(f"Skipping {session_id}: invalid metadata")
+        # Check if session is expired
+        if session_ttl > 0:
+            age = time.time() - last_access
+            if age > session_ttl:
+                print(f"Skipping {session_id}: expired ({age:.0f}s old)")
                 continue
 
-            # Check if session is expired
-            if session_ttl > 0:
-                age = time.time() - last_access
-                if age > session_ttl:
-                    print(f"Skipping {session_id}: expired ({age:.0f}s old)")
-                    continue
+        try:
+            # Create kernel for restored session
+            kernel_id = remote_client.create_kernel()
 
-            try:
-                # Create kernel for restored session
-                kernel_id = remote_client.create_kernel()
-
-                # Change working directory
-                chdir_code = f"import os\nos.chdir({repr(session_directory)})"
-                chdir_result = await remote_client.execute(kernel_id, chdir_code)
-                if chdir_result["error"]:
-                    print(
-                        f"Warning: Failed to set working directory for {session_id}: "
-                        f"{'; '.join(chdir_result['error'])}",
-                        file=sys.stderr,
-                    )
-                    remote_client.shutdown_kernel(kernel_id)
-                    continue
-
-                # Create session object
-                session = Session(
-                    id=session_id,
-                    kernel_id=kernel_id,
-                    created_at=created_at,
-                    last_access=last_access,
-                    directory=session_directory,
+            # Change working directory
+            chdir_code = f"import os\nos.chdir({repr(session_directory)})"
+            chdir_result = await remote_client.execute(kernel_id, chdir_code)
+            if chdir_result["error"]:
+                print(
+                    f"Warning: Failed to set working directory for {session_id}: "
+                    f"{'; '.join(chdir_result['error'])}",
+                    file=sys.stderr,
                 )
-
-                # Create notebook object
-                notebook = Notebook(session_id, remote_client, session_directory)
-                notebook.kernel_id = kernel_id
-
-                # Restore execution history
-                history_restored = await notebook.load_from_file()
-                if not history_restored:
-                    print(
-                        f"Warning: Failed to restore history for session {session_id}",
-                        file=sys.stderr,
-                    )
-                    remote_client.shutdown_kernel(kernel_id)
-                    continue
-
-                async with registry_lock:
-                    # Check again inside the lock before committing
-                    if session_id not in sessions:
-                        sessions[session_id] = session
-                        notebooks[session_id] = notebook
-                        print(f"Restored session: {session_id}")
-                        restored_count += 1
-                    else:
-                        print(f"Session {session_id} already restored by another task")
-                        remote_client.shutdown_kernel(kernel_id)
-
-            except Exception as e:
-                print(f"Error restoring session {session_id}: {e}", file=sys.stderr)
+                remote_client.shutdown_kernel(kernel_id)
                 continue
 
-    finally:
-        # Clean up temporary kernel
-        if temp_kernel_id is not None:
-            try:
-                remote_client.shutdown_kernel(temp_kernel_id)
-            except Exception:
-                pass
+            # Create session object
+            session = Session(
+                id=session_id,
+                kernel_id=kernel_id,
+                created_at=created_at,
+                last_access=last_access,
+                directory=session_directory,
+            )
+
+            # Create notebook object
+            notebook = Notebook(session_id, remote_client, session_directory)
+            notebook.kernel_id = kernel_id
+
+            # Restore execution history
+            history_restored = await notebook.load_from_file()
+            if not history_restored:
+                print(
+                    f"Warning: Failed to restore history for session {session_id}",
+                    file=sys.stderr,
+                )
+                remote_client.shutdown_kernel(kernel_id)
+                continue
+
+            async with registry_lock:
+                # Check again inside the lock before committing
+                if session_id not in sessions:
+                    sessions[session_id] = session
+                    notebooks[session_id] = notebook
+                    print(f"Restored session: {session_id}")
+                    restored_count += 1
+                else:
+                    print(f"Session {session_id} already restored by another task")
+                    remote_client.shutdown_kernel(kernel_id)
+
+        except Exception as e:
+            print(f"Error restoring session {session_id}: {e}", file=sys.stderr)
+            continue
 
     return restored_count
 
@@ -355,7 +336,7 @@ async def create_session() -> dict[str, str]:
         current_time = time.time()
         session_directory = os.path.join(sessions_dir, session_id)
         await remote_client.create_session_directory(
-            kernel_id, session_directory, current_time, current_time
+            session_directory, current_time, current_time
         )
 
         # Change kernel working directory to session directory
@@ -437,7 +418,7 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
         # Update last access time
         session.touch()
         await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
+            session.directory, session.last_access
         )
 
         # Add session_id to the response
@@ -549,7 +530,7 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
         # Update last access
         session.touch()
         await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
+            session.directory, session.last_access
         )
 
         return response
@@ -679,7 +660,7 @@ async def upload_file_path(
         # Update last access
         session.touch()
         await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
+            session.directory, session.last_access
         )
 
         # Return success with relative sandbox_path so agents can
@@ -806,7 +787,7 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
         session.touch()
         # Still update metadata on remote side for persistence
         await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
+            session.directory, session.last_access
         )
 
         return {"error": "", "result": result_lines}
@@ -923,7 +904,7 @@ async def read_file(
 
         session.touch()
         await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
+            session.directory, session.last_access
         )
 
         return {
@@ -1003,7 +984,7 @@ async def write_file(
 
         session.touch()
         await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
+            session.directory, session.last_access
         )
 
         return {
@@ -1111,7 +1092,7 @@ async def edit_file(
 
         session.touch()
         await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
+            session.directory, session.last_access
         )
 
         return {
@@ -1242,7 +1223,9 @@ def main() -> None:
                 "JUPYTER_TOKEN is required "
                 "(provide via --jupyter-token or environment variable)"
             )
-        remote_client = RemoteJupyterClient(base_url=base_url, auth_token=token)
+        remote_client = RemoteJupyterClient(
+            base_url=base_url, auth_token=token, jupyter_root=jupyter_root_path
+        )
         sessions_dir = sessions_dir_path
         jupyter_root = jupyter_root_path
         session_ttl = ttl
