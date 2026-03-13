@@ -56,6 +56,7 @@ class TestConfigurationPrecedence:
                 "JUPYTER_BASE_URL": "http://env-url:8888",
                 "JUPYTER_TOKEN": "env-token",
                 "SESSIONS_DIR": "/env/notebooks",
+                "JUPYTER_ROOT": "/home/jovyan",
             },
         ):
             with patch(
@@ -95,6 +96,7 @@ class TestConfigurationPrecedence:
                 "JUPYTER_BASE_URL": "http://env-url:8888",
                 "JUPYTER_TOKEN": "env-token",
                 "SESSIONS_DIR": "/env/notebooks",
+                "JUPYTER_ROOT": "/home/jovyan",
             },
         ):
             with patch("sys.argv", ["jupyter-interpreter-mcp"]):
