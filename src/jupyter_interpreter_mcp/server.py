@@ -283,12 +283,20 @@ async def _validate_session_and_path(
     :return: Tuple of the validated :class:`~jupyter_interpreter_mcp.session.Session`
         object and the Contents API path string.
     :rtype: tuple[Session, str]
-    :raises ValueError: If the session is not found, has expired, or *path*
-        escapes the session sandbox.
+    :raises ValueError: If the session is not found, has expired, *path*
+        escapes the session sandbox, or *path* matches a sensitive file
+        pattern.
     """
-    from jupyter_interpreter_mcp.session import validate_path
+    from jupyter_interpreter_mcp.session import is_sensitive_file, validate_path
 
     global sessions, jupyter_root
+
+    # Reject sensitive file patterns early, before any I/O.
+    if is_sensitive_file(path):
+        raise ValueError(
+            f"Access blocked: '{os.path.basename(path)}' matches a "
+            "sensitive file pattern"
+        )
 
     await ensure_session_available(session_id)
 
@@ -471,16 +479,12 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
     :rtype: dict[str, str]
     """
     from jupyter_interpreter_mcp.remote import JupyterConnectionError
-    from jupyter_interpreter_mcp.session import detect_content_type, is_sensitive_file
+    from jupyter_interpreter_mcp.session import detect_content_type
 
     global remote_client
 
     try:
         session, api_path = await _validate_session_and_path(session_id, path)
-
-        # Prevent access to sensitive files within the sandbox
-        if is_sensitive_file(api_path):
-            return {"error": "Access to this file is restricted for security reasons."}
 
         # Fetch file content via Contents API
         try:
@@ -834,7 +838,6 @@ async def read_file(
     :rtype: dict[str, object]
     """
     from jupyter_interpreter_mcp.remote import JupyterConnectionError
-    from jupyter_interpreter_mcp.session import is_sensitive_file
 
     global remote_client
 
@@ -843,15 +846,6 @@ async def read_file(
             return {"error": "offset must be >= 1"}
         if limit < 1:
             return {"error": "limit must be >= 1"}
-
-        # Sensitive-file guard.
-        if is_sensitive_file(path):
-            return {
-                "error": (
-                    f"Access blocked: '{os.path.basename(path)}' matches a "
-                    "sensitive file pattern"
-                )
-            }
 
         session, api_path = await _validate_session_and_path(session_id, path)
 
@@ -948,8 +942,6 @@ async def write_file(
         success; or ``error`` on failure.
     :rtype: dict[str, object]
     """
-    from jupyter_interpreter_mcp.session import is_sensitive_file
-
     global remote_client
 
     try:
@@ -961,15 +953,6 @@ async def write_file(
                 "error": (
                     "Invalid path: destination path must not end with '/'; "
                     "please provide a file name."
-                )
-            }
-
-        # Sensitive-file guard.
-        if is_sensitive_file(path):
-            return {
-                "error": (
-                    f"Write blocked: '{os.path.basename(path)}' matches a "
-                    "sensitive file pattern"
                 )
             }
 
@@ -1037,20 +1020,10 @@ async def edit_file(
     """
     from jupyter_interpreter_mcp.editing import EditError, find_and_replace
     from jupyter_interpreter_mcp.remote import JupyterConnectionError
-    from jupyter_interpreter_mcp.session import is_sensitive_file
 
     global remote_client
 
     try:
-        # Sensitive-file guard.
-        if is_sensitive_file(path):
-            return {
-                "error": (
-                    f"Edit blocked: '{os.path.basename(path)}' matches a "
-                    "sensitive file pattern"
-                )
-            }
-
         session, api_path = await _validate_session_and_path(session_id, path)
 
         # Fetch current file content.
