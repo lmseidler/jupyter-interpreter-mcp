@@ -285,6 +285,45 @@ async def ensure_session_available(session_id: str) -> bool:
         return restored > 0 and session_id in sessions and session_id in notebooks
 
 
+async def _validate_session_and_path(
+    session_id: str,
+    path: str,
+) -> tuple[Session, str]:
+    """Validate *session_id* and *path*; return ``(session, api_path)``.
+
+    *api_path* is the Jupyter Contents API path derived by resolving *path*
+    relative to the session sandbox directory and then expressing the result
+    relative to *jupyter_root* using POSIX separators.
+
+    :param session_id: Session identifier to validate.
+    :type session_id: str
+    :param path: File/directory path relative to the session directory.
+    :type path: str
+    :return: Tuple of the validated :class:`~jupyter_interpreter_mcp.session.Session`
+        object and the Contents API path string.
+    :rtype: tuple[Session, str]
+    :raises ValueError: If the session is not found, has expired, or *path*
+        escapes the session sandbox.
+    """
+    from jupyter_interpreter_mcp.session import validate_path
+
+    global sessions, jupyter_root
+
+    await ensure_session_available(session_id)
+
+    async with registry_lock:
+        if session_id not in sessions:
+            raise ValueError(f"Session {session_id} not found")
+        session = sessions[session_id]
+        if session.is_expired(session_ttl):
+            raise ValueError(f"Session {session_id} has expired")
+
+    validated_path = validate_path(session.directory, path)
+    jupyter_root_abs = posixpath.normpath(jupyter_root)
+    api_path = posixpath.relpath(validated_path, jupyter_root_abs)
+    return session, api_path
+
+
 @mcp.tool(
     "create_session",
     description=(
@@ -451,30 +490,16 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
     :rtype: dict[str, str]
     """
     from jupyter_interpreter_mcp.remote import JupyterConnectionError
-    from jupyter_interpreter_mcp.session import detect_content_type, validate_path
+    from jupyter_interpreter_mcp.session import detect_content_type, is_sensitive_file
 
-    global sessions, remote_client, jupyter_root
+    global remote_client
 
     try:
-        # Restore from disk if not already loaded in memory
-        await ensure_session_available(session_id)
+        session, api_path = await _validate_session_and_path(session_id, path)
 
-        # Validate session under lock (no notebook needed)
-        async with registry_lock:
-            if session_id not in sessions:
-                return {"error": f"Session {session_id} not found"}
-            session = sessions[session_id]
-            if session.is_expired(session_ttl):
-                return {"error": f"Session {session_id} has expired"}
-
-        # Validate path
-        validated_path = validate_path(session.directory, path)
-
-        # Derive the Contents API path (relative to jupyter_root).
-        # Use posixpath to guarantee forward-slash separators regardless of
-        # the host OS, since the remote Jupyter server is always POSIX.
-        jupyter_root_abs = posixpath.normpath(jupyter_root)
-        api_path = posixpath.relpath(validated_path, jupyter_root_abs)
+        # Prevent access to sensitive files within the sandbox
+        if is_sensitive_file(api_path):
+            return {"error": "Access to this file is restricted for security reasons."}
 
         # Fetch file content via Contents API
         try:
@@ -502,10 +527,21 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
                     "encoding": "text",
                     "filename": filename,
                 }
-        else:
+        elif file_format == "text":
             # Text file
             response = {
                 "content": raw_content,
+                "encoding": "text",
+                "filename": filename,
+            }
+        else:
+            # Other formats (e.g. JSON notebooks)
+            try:
+                serialized_content = json.dumps(raw_content, ensure_ascii=False)
+            except TypeError:
+                serialized_content = str(raw_content)
+            response = {
+                "content": serialized_content,
                 "encoding": "text",
                 "filename": filename,
             }
@@ -568,22 +604,15 @@ async def upload_file_path(
     from jupyter_interpreter_mcp.session import (
         is_sensitive_file,
         validate_host_path,
-        validate_path,
     )
 
-    global sessions, remote_client, jupyter_root
+    global remote_client
 
     try:
-        # Restore from disk if not already loaded in memory
-        await ensure_session_available(session_id)
-
-        # Validate session under lock (no notebook needed)
-        async with registry_lock:
-            if session_id not in sessions:
-                return {"error": f"Session {session_id} not found"}
-            session = sessions[session_id]
-            if session.is_expired(session_ttl):
-                return {"error": f"Session {session_id} has expired"}
+        # Validate session and destination path together.
+        session, api_dest = await _validate_session_and_path(
+            session_id, destination_path
+        )
 
         # 3.1 Validate host_path is absolute (done inside validate_host_path)
         # 3.2 Security: check host_path against allowed directories
@@ -610,13 +639,7 @@ async def upload_file_path(
             return {"error": f"Permission denied: cannot read {host_path}"}
 
         # 3.6 Validate destination path within session directory
-        validated_dest = validate_path(session.directory, destination_path)
-
-        # Derive the Contents API path (relative to jupyter_root).
-        # Use posixpath to guarantee forward-slash separators regardless of
-        # the host OS, since the remote Jupyter server is always POSIX.
-        jupyter_root_abs = posixpath.normpath(jupyter_root)
-        api_dest = posixpath.relpath(validated_dest, jupyter_root_abs)
+        # (already done by _validate_session_and_path above; api_dest is ready)
 
         # 3.7 Overwrite protection via Contents API existence check
         if not overwrite:
@@ -689,36 +712,18 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
     :return: A dictionary with 'error' or 'result' key.
     :rtype: dict[str, list[str] | str]
     """
-    from jupyter_interpreter_mcp.session import validate_path
-
-    global sessions, notebooks, remote_client, sessions_dir, jupyter_root
+    global remote_client, sessions_dir, jupyter_root
 
     try:
-        # Restore from disk if not already loaded in memory
-        await ensure_session_available(session_id)
+        session, api_path = await _validate_session_and_path(session_id, path)
 
-        # Validate session under lock
-        async with registry_lock:
-            if session_id not in sessions:
-                return {"error": f"Session {session_id} not found", "result": []}
-            session = sessions[session_id]
-            if session.is_expired(session_ttl):
-                return {"error": f"Session {session_id} has expired", "result": []}
-
-        # Validate path
-        if path:
-            validated_path = validate_path(session.directory, path)
-        else:
-            validated_path = session.directory
-
-        # Derive the Contents API path from the remote Jupyter root.
-        # jupyter_root is the root directory on the remote Jupyter server
-        # (e.g. /home/jovyan). The Contents API expects paths relative to
-        # this root. Use posixpath to guarantee forward-slash separators
-        # regardless of the host OS.
         jupyter_root_abs = posixpath.normpath(jupyter_root)
         sessions_dir_abs = posixpath.normpath(sessions_dir)
-        validated_abs = posixpath.normpath(validated_path)
+
+        # Confirm the resolved path is still within the Jupyter root.
+        # api_path is relative to jupyter_root by construction; re-joining
+        # gives the absolute form for the commonpath check.
+        validated_abs = posixpath.normpath(posixpath.join(jupyter_root_abs, api_path))
 
         try:
             # Ensure sessions_dir is under the Jupyter root
@@ -759,7 +764,6 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
                 "result": [],
             }
 
-        api_path = posixpath.relpath(validated_abs, jupyter_root_abs)
         # Get contents via Jupyter Contents API
         # Using sync method from RemoteJupyterClient as per codebase pattern
         response = remote_client.get_contents(api_path)
@@ -811,6 +815,315 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
         return {"error": str(e), "result": []}
     except Exception as e:
         return {"error": f"List directory failed: {str(e)}", "result": []}
+
+
+@mcp.tool(
+    "read_file",
+    description=(
+        "Reads a text file from the session directory and returns its content "
+        "with 1-indexed line numbers. Requires a valid session_id. "
+        "Use offset and limit to page through large files without filling the "
+        "context window (default: first 200 lines). "
+        "Binary files are not supported; use download_file for those."
+    ),
+)
+async def read_file(
+    session_id: str,
+    path: str,
+    offset: int = 1,
+    limit: int = 200,
+) -> dict[str, object]:
+    """Read a text file from the session sandbox with optional line windowing.
+
+    Returns up to *limit* lines starting at 1-indexed line *offset*, each
+    prefixed with its line number (``"42: content"``).  Metadata fields
+    indicate the total line count and whether the result was truncated.
+
+    :param session_id: Valid session identifier.
+    :type session_id: str
+    :param path: File path relative to the session directory.
+    :type path: str
+    :param offset: 1-indexed line number to start reading from (default 1).
+    :type offset: int
+    :param limit: Maximum number of lines to return (default 200).
+    :type limit: int
+    :return: Dictionary with ``lines`` (list of numbered line strings),
+        ``total_lines``, ``offset``, ``limit``, ``truncated``, and
+        ``path``; or ``error`` on failure.
+    :rtype: dict[str, object]
+    """
+    from jupyter_interpreter_mcp.remote import JupyterConnectionError
+    from jupyter_interpreter_mcp.session import is_sensitive_file
+
+    global remote_client
+
+    try:
+        if offset < 1:
+            return {"error": "offset must be >= 1"}
+        if limit < 1:
+            return {"error": "limit must be >= 1"}
+
+        # Sensitive-file guard.
+        if is_sensitive_file(path):
+            return {
+                "error": (
+                    f"Access blocked: '{os.path.basename(path)}' matches a "
+                    "sensitive file pattern"
+                )
+            }
+
+        session, api_path = await _validate_session_and_path(session_id, path)
+
+        try:
+            contents = remote_client.get_file_contents(api_path)
+        except JupyterConnectionError:
+            return {"error": f"File not found: {path}"}
+
+        # Binary files cannot be read as text lines.
+        file_format = contents.get("format", "text")
+        raw_content = contents.get("content", "")
+        if file_format == "base64":
+            return {
+                "error": (
+                    "Binary files cannot be read with read_file. "
+                    "Use download_file to retrieve binary content."
+                )
+            }
+
+        # Only plain text content is supported here. Other formats (e.g., JSON)
+        # may return non-string content (dict/list) from the Jupyter Contents API.
+        if file_format != "text":
+            return {
+                "error": (
+                    f"Unsupported file format '{file_format}' for read_file. "
+                    "Only text files can be read as lines. "
+                    "Use download_file for binary or structured content."
+                )
+            }
+
+        if not isinstance(raw_content, str):
+            return {
+                "error": (
+                    "Unsupported content type for read_file; expected text "
+                    "content but received a non-text value from the server."
+                )
+            }
+
+        # Split into lines and apply offset/limit window.
+        all_lines = raw_content.splitlines()
+        total_lines = len(all_lines)
+
+        # Clamp offset to valid range (1-indexed → 0-indexed).
+        start_idx = max(0, offset - 1)
+        end_idx = start_idx + limit
+        window = all_lines[start_idx:end_idx]
+        truncated = end_idx < total_lines
+
+        numbered = [f"{start_idx + 1 + i}: {line}" for i, line in enumerate(window)]
+
+        session.touch()
+        await remote_client.update_session_metadata(
+            session.kernel_id, session.directory, session.last_access
+        )
+
+        return {
+            "lines": numbered,
+            "total_lines": total_lines,
+            "offset": offset,
+            "limit": limit,
+            "truncated": truncated,
+            "path": path,
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Read failed: {str(e)}"}
+
+
+@mcp.tool(
+    "write_file",
+    description=(
+        "Writes text content to a file in the session directory, creating or "
+        "overwriting it. Requires a valid session_id. Parent directories are "
+        "created automatically. Binary uploads should use upload_file_path "
+        "instead."
+    ),
+)
+async def write_file(
+    session_id: str,
+    path: str,
+    content: str,
+) -> dict[str, object]:
+    """Write (create or overwrite) a text file in the session sandbox.
+
+    :param session_id: Valid session identifier.
+    :type session_id: str
+    :param path: Destination file path relative to the session directory.
+    :type path: str
+    :param content: Text content to write.
+    :type content: str
+    :return: Dictionary with ``status``, ``path``, and ``bytes_written`` on
+        success; or ``error`` on failure.
+    :rtype: dict[str, object]
+    """
+    from jupyter_interpreter_mcp.session import is_sensitive_file
+
+    global remote_client
+
+    try:
+        # Basic path validation: reject empty paths and directory-like paths.
+        if not path or not path.strip():
+            return {"error": "Invalid path: destination path must not be empty."}
+        if path.endswith("/"):
+            return {
+                "error": (
+                    "Invalid path: destination path must not end with '/'; "
+                    "please provide a file name."
+                )
+            }
+
+        # Sensitive-file guard.
+        if is_sensitive_file(path):
+            return {
+                "error": (
+                    f"Write blocked: '{os.path.basename(path)}' matches a "
+                    "sensitive file pattern"
+                )
+            }
+
+        session, api_path = await _validate_session_and_path(session_id, path)
+
+        # Ensure parent directory exists before writing.
+        parent_api_path = posixpath.dirname(api_path)
+        if parent_api_path:
+            remote_client.create_directory(parent_api_path)
+
+        remote_client.put_contents(api_path, content, format="text")
+
+        session.touch()
+        await remote_client.update_session_metadata(
+            session.kernel_id, session.directory, session.last_access
+        )
+
+        return {
+            "status": "ok",
+            "path": path,
+            "bytes_written": len(content.encode("utf-8")),
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Write failed: {str(e)}"}
+
+
+@mcp.tool(
+    "edit_file",
+    description=(
+        "Edits a text file in the session directory by replacing an exact "
+        "substring (old_string) with new_string. Requires a valid session_id. "
+        "Three matching strategies are tried in order: exact, line-trimmed "
+        "(leading/trailing whitespace ignored per line), and "
+        "indentation-flexible (common indent level stripped before comparing). "
+        "By default the match must be unique; set replace_all=True to replace "
+        "every occurrence. Use read_file first to confirm the exact content."
+    ),
+)
+async def edit_file(
+    session_id: str,
+    path: str,
+    old_string: str,
+    new_string: str,
+    replace_all: bool = False,
+) -> dict[str, object]:
+    """Edit a text file by replacing a substring in the session sandbox.
+
+    :param session_id: Valid session identifier.
+    :type session_id: str
+    :param path: File path relative to the session directory.
+    :type path: str
+    :param old_string: The text to find and replace.  Must be non-empty.
+    :type old_string: str
+    :param new_string: The replacement text.
+    :type new_string: str
+    :param replace_all: Replace all occurrences instead of requiring a unique
+        match (default ``False``).
+    :type replace_all: bool
+    :return: Dictionary with ``status``, ``path``, and ``replacements`` on
+        success; or ``error`` on failure.
+    :rtype: dict[str, object]
+    """
+    from jupyter_interpreter_mcp.editing import EditError, find_and_replace
+    from jupyter_interpreter_mcp.remote import JupyterConnectionError
+    from jupyter_interpreter_mcp.session import is_sensitive_file
+
+    global remote_client
+
+    try:
+        # Sensitive-file guard.
+        if is_sensitive_file(path):
+            return {
+                "error": (
+                    f"Edit blocked: '{os.path.basename(path)}' matches a "
+                    "sensitive file pattern"
+                )
+            }
+
+        session, api_path = await _validate_session_and_path(session_id, path)
+
+        # Fetch current file content.
+        try:
+            contents = remote_client.get_file_contents(api_path)
+        except JupyterConnectionError:
+            return {"error": f"File not found: {path}"}
+
+        # Binary files cannot be edited as text.
+        file_format = contents.get("format", "text")
+        raw_content = contents.get("content", "")
+        if file_format == "base64":
+            return {
+                "error": (
+                    "Binary files cannot be edited with edit_file. "
+                    "Use execute_code to manipulate binary content."
+                )
+            }
+
+        # Only plain-text files with string content are supported.
+        if file_format != "text" or not isinstance(raw_content, str):
+            return {
+                "error": (
+                    f"Unsupported file format for editing: {file_format!r}. "
+                    "Only text files with string content can be edited."
+                )
+            }
+
+        # Apply the replacement.
+        try:
+            new_content, count = find_and_replace(
+                raw_content, old_string, new_string, replace_all=replace_all
+            )
+        except EditError as e:
+            return {"error": str(e)}
+
+        # Write the updated content back.
+        remote_client.put_contents(api_path, new_content, format="text")
+
+        session.touch()
+        await remote_client.update_session_metadata(
+            session.kernel_id, session.directory, session.last_access
+        )
+
+        return {
+            "status": "ok",
+            "path": path,
+            "replacements": count,
+        }
+
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Edit failed: {str(e)}"}
 
 
 def main() -> None:
