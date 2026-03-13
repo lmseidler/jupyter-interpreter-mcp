@@ -145,7 +145,9 @@ def _find_indent_flexible_matches(
         block_normalised = [line.rstrip() for line in _strip_min_indent(block)]
         if block_normalised == old_normalised:
             start = sum(len(line) for line in content_lines[:i])
-            end = start + sum(len(line) for line in content_lines[i : i + n])
+            # Include full lines up to the last, but stop before the newline of the last line.
+            end = start + sum(len(line) for line in content_lines[i : i + n - 1])
+            end += len(_strip_line_endings(content_lines[i + n - 1]))
             matches.append((start, end))
     return matches
 
