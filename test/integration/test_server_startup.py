@@ -14,21 +14,22 @@ class TestServerStartup:
         mock_client.validate_connection = Mock()
         mock_client_class.return_value = mock_client
 
-        with patch(
-            "sys.argv",
-            [
-                "jupyter-interpreter-mcp",
-                "--jupyter-base-url",
-                "http://test:8888",
-                "--jupyter-token",
-                "test-token",
-                "--sessions-dir",
-                "/test/path",
-            ],
-        ):
-            from jupyter_interpreter_mcp.server import main
+        with patch.dict("os.environ", {"JUPYTER_ROOT": "/home/jovyan"}):
+            with patch(
+                "sys.argv",
+                [
+                    "jupyter-interpreter-mcp",
+                    "--jupyter-base-url",
+                    "http://test:8888",
+                    "--jupyter-token",
+                    "test-token",
+                    "--sessions-dir",
+                    "/test/path",
+                ],
+            ):
+                from jupyter_interpreter_mcp.server import main
 
-            main()
+                main()
 
         # Verify client was initialized with correct parameters
         mock_client_class.assert_called_once_with(
@@ -56,6 +57,7 @@ class TestServerStartup:
                 "JUPYTER_BASE_URL": "http://env:8888",
                 "JUPYTER_TOKEN": "env-token",
                 "SESSIONS_DIR": "/env/path",
+                "JUPYTER_ROOT": "/home/jovyan",
             },
         ):
             with patch("sys.argv", ["jupyter-interpreter-mcp"]):
@@ -85,6 +87,7 @@ class TestServerStartup:
             {
                 "JUPYTER_BASE_URL": "http://env:8888",
                 "JUPYTER_TOKEN": "env-token",
+                "JUPYTER_ROOT": "/home/jovyan",
             },
         ):
             with patch(
@@ -116,7 +119,13 @@ class TestServerStartup:
         mock_client.validate_connection = Mock()
         mock_client_class.return_value = mock_client
 
-        with patch.dict("os.environ", {"JUPYTER_TOKEN": "test-token"}):
+        with patch.dict(
+            "os.environ",
+            {
+                "JUPYTER_TOKEN": "test-token",
+                "JUPYTER_ROOT": "/home/jovyan",
+            },
+        ):
             with patch(
                 "sys.argv",
                 [
