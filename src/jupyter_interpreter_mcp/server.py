@@ -938,6 +938,17 @@ async def write_file(
     global remote_client
 
     try:
+        # Basic path validation: reject empty paths and directory-like paths.
+        if not path or not path.strip():
+            return {"error": "Invalid path: destination path must not be empty."}
+        if path.endswith("/"):
+            return {
+                "error": (
+                    "Invalid path: destination path must not end with '/'; "
+                    "please provide a file name."
+                )
+            }
+
         # Sensitive-file guard.
         if is_sensitive_file(path):
             return {
