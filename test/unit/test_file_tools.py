@@ -371,15 +371,12 @@ class TestWriteFile:
         mock_remote.create_directory.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_write_empty_path_resolves_to_session_dir(self):
-        """write_file with path='' targets the session directory itself.
+    async def test_write_empty_path_is_rejected(self):
+        """write_file with path='' should be rejected as an invalid file path.
 
-        The session directory is a valid target from the sandbox perspective
-        (validate_path allows it), so the call reaches put_contents.  This
-        test documents the current behavior: the write is not blocked by
-        path validation and succeeds (the remote Jupyter server would
-        ultimately reject writing a file at a directory path, but that is
-        outside the scope of the unit test).
+        An empty path resolves to the session directory itself, which is not a
+        file. write_file is documented as writing a *file*, so the call should
+        fail fast and must not reach put_contents.
         """
         with tempfile.TemporaryDirectory() as tmpdir:
             session_dir, mock_remote = _setup_server(tmpdir)
@@ -390,10 +387,10 @@ class TestWriteFile:
                 content="data\n",
             )
 
-        # No path-traversal or sensitive-file error is raised; the call
-        # propagates to put_contents as documented above.
-        assert "error" not in result
-        mock_remote.put_contents.assert_called_once()
+        # The empty path is invalid; an error is returned and no write is
+        # attempted via put_contents.
+        assert "error" in result
+        mock_remote.put_contents.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
