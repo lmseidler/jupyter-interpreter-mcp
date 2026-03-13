@@ -890,6 +890,25 @@ async def read_file(
                 )
             }
 
+        # Only plain text content is supported here. Other formats (e.g., JSON)
+        # may return non-string content (dict/list) from the Jupyter Contents API.
+        if file_format != "text":
+            return {
+                "error": (
+                    f"Unsupported file format '{file_format}' for read_file. "
+                    "Only text files can be read as lines. "
+                    "Use download_file for binary or structured content."
+                )
+            }
+
+        if not isinstance(raw_content, str):
+            return {
+                "error": (
+                    "Unsupported content type for read_file; expected text "
+                    "content but received a non-text value from the server."
+                )
+            }
+
         # Split into lines and apply offset/limit window.
         all_lines = raw_content.splitlines()
         total_lines = len(all_lines)
