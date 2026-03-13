@@ -103,11 +103,21 @@ class Notebook:
 
         api_path = self.remote_client._to_api_path(self.file_path)
         try:
+            # First, explicitly check whether the history file exists. Only a confirmed
+            # "not found" should be treated as a benign fresh-session condition.
+            try:
+                if not self.remote_client.check_exists(api_path):
+                    # File does not exist — fresh session with no prior history.
+                    self.history = []
+                    return True
+            except JupyterConnectionError:
+                # Connectivity issue while checking existence; do not treat as file-not-found.
+                return False
+
             contents = self.remote_client.get_file_contents(api_path)
         except JupyterConnectionError:
-            # File not found — fresh session with no prior history
-            self.history = []
-            return True
+            # Connectivity issue while fetching contents; treat as a load failure.
+            return False
         except Exception:
             return False
 
