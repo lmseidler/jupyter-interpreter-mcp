@@ -108,6 +108,7 @@ The server uses a session-based architecture where each session has:
 2. **Execute code** in the session using `execute_code`
 3. **Upload/download files** within the session directory using `upload_file_path` and `download_file`
 4. **List files** in the session directory using `list_dir`
+5. **Read/write/edit text files** directly using `read_file`, `write_file`, and `edit_file`
 
 Sessions automatically expire after the configured TTL (time-to-live) period.
 
@@ -208,6 +209,97 @@ result = list_dir(session_id=session_id)
 
 # List subdirectory
 result = list_dir(session_id=session_id, path="images")
+```
+
+### read_file
+
+Reads a text file from the session directory and returns its content with 1-indexed line numbers. Use `offset` and `limit` to page through large files. Binary files are not supported; use `download_file` for those.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `path` (string, required): File path relative to the session directory
+- `offset` (integer, optional): 1-indexed line number to start reading from (default: `1`)
+- `limit` (integer, optional): Maximum number of lines to return (default: `200`)
+
+**Returns:**
+A dictionary containing:
+- `lines` (list of strings): Lines prefixed with their line number (e.g. `"42: content"`)
+- `total_lines` (integer): Total number of lines in the file
+- `offset` (integer): The offset that was used
+- `limit` (integer): The limit that was used
+- `truncated` (boolean): Whether the result was truncated
+- `path` (string): The file path that was read
+
+**Example usage:**
+```python
+# Read first 200 lines
+result = read_file(session_id=session_id, path="script.py")
+# Returns: {"lines": ["1: import os", "2: ..."], "total_lines": 42, "offset": 1, "limit": 200, "truncated": False, "path": "script.py"}
+
+# Page through a large file
+result = read_file(session_id=session_id, path="data.csv", offset=201, limit=200)
+```
+
+### write_file
+
+Writes text content to a file in the session directory, creating or overwriting it. Parent directories are created automatically. Use `upload_file_path` for binary files.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `path` (string, required): Destination file path relative to the session directory
+- `content` (string, required): Text content to write
+
+**Returns:**
+A dictionary containing:
+- `status` (string): `"ok"` on success
+- `path` (string): The file path that was written
+- `bytes_written` (integer): Number of bytes written
+
+**Example usage:**
+```python
+result = write_file(
+    session_id=session_id,
+    path="scripts/hello.py",
+    content="print('Hello, World!')\n"
+)
+# Returns: {"status": "ok", "path": "scripts/hello.py", "bytes_written": 23}
+```
+
+### edit_file
+
+Edits a text file in the session directory by replacing an exact substring (`old_string`) with `new_string`. Three matching strategies are tried in order: exact, line-trimmed, and indentation-flexible. By default the match must be unique; set `replace_all=True` to replace every occurrence. Use `read_file` first to confirm the exact content.
+
+**Parameters:**
+- `session_id` (string, required): The session ID
+- `path` (string, required): File path relative to the session directory
+- `old_string` (string, required): The text to find and replace (must be non-empty)
+- `new_string` (string, required): The replacement text
+- `replace_all` (boolean, optional): Replace all occurrences instead of requiring a unique match (default: `false`)
+
+**Returns:**
+A dictionary containing:
+- `status` (string): `"ok"` on success
+- `path` (string): The file path that was edited
+- `replacements` (integer): Number of replacements made
+
+**Example usage:**
+```python
+result = edit_file(
+    session_id=session_id,
+    path="scripts/hello.py",
+    old_string="Hello, World!",
+    new_string="Hello, Python!",
+)
+# Returns: {"status": "ok", "path": "scripts/hello.py", "replacements": 1}
+
+# Replace all occurrences
+result = edit_file(
+    session_id=session_id,
+    path="data.txt",
+    old_string="foo",
+    new_string="bar",
+    replace_all=True,
+)
 ```
 
 ### upload_file_path
