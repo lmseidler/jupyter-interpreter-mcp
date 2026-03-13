@@ -168,7 +168,9 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
                 session_dir_contents = remote_client.get_contents(session_dir_api_path)
                 legacy_meta_name: str | None = None
                 for item in session_dir_contents.get("content", []):
-                    if item.get("type") == "file" and item.get("name", "").endswith(".json"):
+                    if item.get("type") == "file" and item.get("name", "").endswith(
+                        ".json"
+                    ):
                         legacy_meta_name = item["name"]
                         break
                 if legacy_meta_name is None:

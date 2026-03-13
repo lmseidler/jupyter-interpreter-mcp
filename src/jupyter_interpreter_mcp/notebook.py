@@ -111,7 +111,8 @@ class Notebook:
                     self.history = []
                     return True
             except JupyterConnectionError:
-                # Connectivity issue while checking existence; do not treat as file-not-found.
+                # Connectivity issue while checking existence;
+                # do not treat as file-not-found.
                 return False
 
             contents = self.remote_client.get_file_contents(api_path)
