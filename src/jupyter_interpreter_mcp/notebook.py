@@ -1,6 +1,9 @@
+import logging
 import os
 
 from jupyter_interpreter_mcp.remote import RemoteJupyterClient
+
+logger = logging.getLogger(__name__)
 
 
 class Notebook:
@@ -162,6 +165,19 @@ else:
 
     # TODO abstract out creating a new client
     def close(self) -> None:
-        """Shuts down the remote Jupyter kernel cleanly."""
+        """Shuts down the remote Jupyter kernel cleanly.
+
+        Silently ignores errors when the kernel has already been shut down
+        (e.g. 404 responses), so this method is safe to call multiple times
+        or during ``finally`` cleanup blocks.
+        """
         if self.kernel_id:
-            self.remote_client.shutdown_kernel(self.kernel_id)
+            try:
+                self.remote_client.shutdown_kernel(self.kernel_id)
+            except Exception:
+                # Kernel may already be shut down (404) or unreachable.
+                # Shutdown is best-effort cleanup, so log and continue.
+                logger.debug(
+                    "Ignoring error while shutting down kernel %s",
+                    self.kernel_id,
+                )

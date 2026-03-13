@@ -443,3 +443,107 @@ print("Metadata updated successfully")
                 raise JupyterConnectionError(f"Path not found: {path}") from e
             # 403 is already handled by _make_request as JupyterAuthError
             raise
+
+    def get_file_contents(self, path: str) -> dict[str, Any]:
+        """Fetch file content from Jupyter Contents API.
+
+        Retrieves file content (text or base64-encoded binary) via
+        ``GET /api/contents/{path}?content=1&type=file``.
+
+        :param path: Path to the file relative to the Jupyter root
+            (e.g., ``'sessions/abc123/data.csv'``).
+        :type path: str
+        :return: Contents API response dict with at minimum ``format``
+            (``"text"`` or ``"base64"``), ``content``, and ``name`` keys.
+        :rtype: dict[str, Any]
+        :raises JupyterConnectionError: If the file is not found (404) or
+            the connection fails.
+        :raises JupyterAuthError: If permission is denied (401/403).
+        """
+        try:
+            response = self._make_request(
+                "GET", f"/api/contents/{path}", params={"content": "1", "type": "file"}
+            )
+            return cast(dict[str, Any], response.json())
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                raise JupyterConnectionError(f"File not found: {path}") from e
+            raise
+
+    def put_contents(
+        self, path: str, content: str, format: str = "text"
+    ) -> dict[str, Any]:
+        """Create or overwrite a file via Jupyter Contents API.
+
+        Sends ``PUT /api/contents/{path}`` with a JSON body containing
+        ``{"type": "file", "format": format, "content": content}``.
+
+        :param path: Destination path relative to the Jupyter root
+            (e.g., ``'sessions/abc123/output.txt'``).
+        :type path: str
+        :param content: File content.  Plain text for ``format="text"``;
+            base64-encoded bytes for ``format="base64"``.
+        :type content: str
+        :param format: Either ``"text"`` (default) or ``"base64"``.
+        :type format: str
+        :return: Contents API response dict for the created/updated file.
+        :rtype: dict[str, Any]
+        :raises JupyterConnectionError: If the connection fails.
+        :raises JupyterAuthError: If permission is denied (401/403).
+        """
+        payload = {"type": "file", "format": format, "content": content}
+        response = self._make_request("PUT", f"/api/contents/{path}", json=payload)
+        return cast(dict[str, Any], response.json())
+
+    def create_directory(self, path: str) -> None:
+        """Create a directory (and any missing parents) via Contents API.
+
+        Sends ``PUT /api/contents/{path}`` with ``{"type": "directory"}`` for
+        each path component that does not yet exist.  Ignores 409 Conflict
+        responses (directory already exists).
+
+        :param path: Directory path relative to the Jupyter root.
+        :type path: str
+        :raises JupyterConnectionError: If the connection fails.
+        :raises JupyterAuthError: If permission is denied (401/403).
+        """
+        # Build list of ancestor paths to ensure all intermediate dirs exist
+        parts = path.replace("\\", "/").split("/")
+        dirs_to_create = []
+        for i in range(1, len(parts) + 1):
+            dirs_to_create.append("/".join(parts[:i]))
+
+        for dir_path in dirs_to_create:
+            try:
+                self._make_request(
+                    "PUT",
+                    f"/api/contents/{dir_path}",
+                    json={"type": "directory"},
+                )
+            except requests.HTTPError as e:
+                # 409 Conflict means the directory already exists — ignore
+                if e.response.status_code == 409:
+                    continue
+                raise
+
+    def check_exists(self, path: str) -> bool:
+        """Check whether a path exists on the remote Jupyter server.
+
+        Uses ``GET /api/contents/{path}?content=0`` to test for existence
+        without fetching the file content.
+
+        :param path: Path to check relative to the Jupyter root.
+        :type path: str
+        :return: ``True`` if the path exists, ``False`` if it does not (404).
+        :rtype: bool
+        :raises JupyterConnectionError: If the connection fails for reasons
+            other than a 404.
+        :raises JupyterAuthError: If permission is denied (401/403).
+        """
+        try:
+            self._make_request("GET", f"/api/contents/{path}", params={"content": "0"})
+            return True
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                return False
+            raise

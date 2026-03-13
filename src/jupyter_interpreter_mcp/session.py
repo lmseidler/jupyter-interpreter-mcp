@@ -6,6 +6,24 @@ import time
 import uuid
 from dataclasses import dataclass
 
+# Module-level state for configured allowed upload directories.
+# None  = not explicitly set; fall back to ALLOWED_UPLOAD_DIRS env var or CWD.
+# []    = allow all (set via --allow-all).
+# [..] = restrict to these resolved absolute paths.
+_configured_allowed_dirs: list[str] | None = None
+
+
+def set_allowed_upload_dirs(dirs: list[str]) -> None:
+    """Set the allowed upload directories, taking precedence over the env var.
+
+    Paths are resolved (symlinks followed) at set time.
+
+    :param dirs: Directory paths to allow uploads from.
+    :type dirs: list[str]
+    """
+    global _configured_allowed_dirs
+    _configured_allowed_dirs = [os.path.realpath(d) for d in dirs]
+
 
 def generate_session_id() -> str:
     """Generate a unique session identifier.
@@ -45,22 +63,27 @@ def validate_path(session_dir: str, relative_path: str) -> str:
 
 
 def get_allowed_upload_dirs() -> list[str]:
-    """Get the list of allowed directories for host file uploads.
+    """Return the configured allowed upload directories.
 
-    Reads from the ``ALLOWED_UPLOAD_DIRS`` environment variable, which should
-    contain a colon-separated list of absolute directory paths.  When the
-    variable is unset or empty the current working directory is used as the
-    default.
+    Priority:
+    1. Explicit config set via :func:`set_allowed_upload_dirs` (e.g. CLI args).
+    2. ``ALLOWED_UPLOAD_DIRS`` environment variable (colon-separated paths).
+    3. Current working directory as the sole default.
 
-    :return: List of absolute, resolved directory paths.
+    An empty list (``[]``) means *all* directories are allowed (set via
+    ``--allow-all``).
+
+    :return: List of resolved absolute directory paths, or ``[]`` for allow-all.
     :rtype: list[str]
     """
+    if _configured_allowed_dirs is not None:
+        return _configured_allowed_dirs
+
     env_value = os.environ.get("ALLOWED_UPLOAD_DIRS", "").strip()
     if env_value:
-        dirs = [os.path.realpath(d.strip()) for d in env_value.split(":") if d.strip()]
-    else:
-        dirs = [os.path.realpath(os.getcwd())]
-    return dirs
+        return [os.path.realpath(d.strip()) for d in env_value.split(":") if d.strip()]
+
+    return [os.path.realpath(os.getcwd())]
 
 
 def validate_host_path(host_path: str, allowed_dirs: list[str] | None = None) -> str:
@@ -69,10 +92,16 @@ def validate_host_path(host_path: str, allowed_dirs: list[str] | None = None) ->
     The path must be absolute.  After resolving symlinks the resolved path
     must fall inside one of the *allowed_dirs*.
 
+    When *allowed_dirs* is ``None`` (default), the configured allowed
+    directories are used.  If no explicit configuration is active (neither
+    :func:`set_allowed_upload_dirs` nor ``ALLOWED_UPLOAD_DIRS`` env var), any
+    absolute path is accepted.  An empty *allowed_dirs* list also accepts all
+    absolute paths (equivalent to ``--allow-all``).
+
     :param host_path: Absolute path on the host filesystem.
     :type host_path: str
-    :param allowed_dirs: Directories the path must reside within.
-        Defaults to :func:`get_allowed_upload_dirs` when ``None``.
+    :param allowed_dirs: Directories the path must reside within, or ``None``
+        to use the globally configured directories.
     :type allowed_dirs: list[str] | None
     :return: The resolved absolute path.
     :rtype: str
@@ -85,11 +114,17 @@ def validate_host_path(host_path: str, allowed_dirs: list[str] | None = None) ->
     resolved = os.path.realpath(host_path)
 
     if allowed_dirs is None:
+        # No explicit restriction configured and no env var → allow all
+        if not _configured_allowed_dirs and not os.environ.get("ALLOWED_UPLOAD_DIRS"):
+            return resolved
         allowed_dirs = get_allowed_upload_dirs()
 
+    # Empty list means allow-all (e.g. --allow-all)
+    if not allowed_dirs:
+        return resolved
+
     for allowed in allowed_dirs:
-        allowed_real = os.path.realpath(allowed)
-        if resolved == allowed_real or resolved.startswith(allowed_real + os.sep):
+        if resolved == allowed or resolved.startswith(allowed + os.sep):
             return resolved
 
     raise ValueError(f"Path '{host_path}' is outside allowed upload directories")

@@ -553,3 +553,185 @@ class TestExecute:
             await client.execute(
                 "kernel-123", "import time; time.sleep(100)", timeout=0.1
             )
+
+
+class TestGetFileContents:
+    """Test get_file_contents method."""
+
+    def test_get_file_contents_text_file(self):
+        """Test fetching a text file via Contents API."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "name": "data.csv",
+            "path": "sessions/abc/data.csv",
+            "type": "file",
+            "format": "text",
+            "content": "a,b,c\n1,2,3\n",
+        }
+
+        with patch.object(client, "_make_request", return_value=mock_response) as mock:
+            result = client.get_file_contents("sessions/abc/data.csv")
+
+        assert result["format"] == "text"
+        assert result["content"] == "a,b,c\n1,2,3\n"
+        mock.assert_called_once_with(
+            "GET",
+            "/api/contents/sessions/abc/data.csv",
+            params={"content": "1", "type": "file"},
+        )
+
+    def test_get_file_contents_binary_file(self):
+        """Test fetching a binary file returns base64 format."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "name": "image.png",
+            "path": "sessions/abc/image.png",
+            "type": "file",
+            "format": "base64",
+            "content": "iVBORw0KGgo=",
+        }
+
+        with patch.object(client, "_make_request", return_value=mock_response):
+            result = client.get_file_contents("sessions/abc/image.png")
+
+        assert result["format"] == "base64"
+        assert result["content"] == "iVBORw0KGgo="
+
+    def test_get_file_contents_not_found(self):
+        """Test that 404 raises JupyterConnectionError."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 404
+        http_error = requests.HTTPError(response=mock_response)
+
+        with patch.object(client, "_make_request", side_effect=http_error):
+            with pytest.raises(JupyterConnectionError, match="File not found"):
+                client.get_file_contents("sessions/abc/missing.txt")
+
+
+class TestPutContents:
+    """Test put_contents method."""
+
+    def test_put_contents_text_file(self):
+        """Test uploading a text file via PUT."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "name": "output.txt",
+            "path": "sessions/abc/output.txt",
+            "type": "file",
+            "format": "text",
+        }
+
+        with patch.object(client, "_make_request", return_value=mock_response) as mock:
+            result = client.put_contents("sessions/abc/output.txt", "hello world")
+
+        assert result["name"] == "output.txt"
+        mock.assert_called_once_with(
+            "PUT",
+            "/api/contents/sessions/abc/output.txt",
+            json={"type": "file", "format": "text", "content": "hello world"},
+        )
+
+    def test_put_contents_base64_file(self):
+        """Test uploading a binary file via PUT with base64 format."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {
+            "name": "data.bin",
+            "path": "sessions/abc/data.bin",
+            "type": "file",
+            "format": "base64",
+        }
+
+        with patch.object(client, "_make_request", return_value=mock_response) as mock:
+            result = client.put_contents(
+                "sessions/abc/data.bin", "aGVsbG8=", format="base64"
+            )
+
+        assert result["name"] == "data.bin"
+        mock.assert_called_once_with(
+            "PUT",
+            "/api/contents/sessions/abc/data.bin",
+            json={"type": "file", "format": "base64", "content": "aGVsbG8="},
+        )
+
+    def test_put_contents_default_format_is_text(self):
+        """Test that default format is 'text'."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 201
+        mock_response.json.return_value = {}
+
+        with patch.object(client, "_make_request", return_value=mock_response) as mock:
+            client.put_contents("some/path.txt", "content")
+
+        call_kwargs = mock.call_args[1]
+        assert call_kwargs["json"]["format"] == "text"
+
+
+class TestCheckExists:
+    """Test check_exists method."""
+
+    def test_check_exists_returns_true_when_found(self):
+        """Test that True is returned when file exists (2xx response)."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 200
+
+        with patch.object(client, "_make_request", return_value=mock_response) as mock:
+            result = client.check_exists("sessions/abc/file.txt")
+
+        assert result is True
+        mock.assert_called_once_with(
+            "GET",
+            "/api/contents/sessions/abc/file.txt",
+            params={"content": "0"},
+        )
+
+    def test_check_exists_returns_false_on_404(self):
+        """Test that False is returned when file does not exist (404)."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 404
+        http_error = requests.HTTPError(response=mock_response)
+
+        with patch.object(client, "_make_request", side_effect=http_error):
+            result = client.check_exists("sessions/abc/missing.txt")
+
+        assert result is False
+
+    def test_check_exists_propagates_non_404_errors(self):
+        """Test that non-404 HTTP errors are re-raised."""
+        client = RemoteJupyterClient(
+            base_url="http://localhost:8888", auth_token="token"
+        )
+        mock_response = Mock()
+        mock_response.status_code = 500
+        http_error = requests.HTTPError(response=mock_response)
+
+        with patch.object(client, "_make_request", side_effect=http_error):
+            with pytest.raises(requests.HTTPError):
+                client.check_exists("sessions/abc/file.txt")

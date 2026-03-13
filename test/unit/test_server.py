@@ -341,157 +341,152 @@ class TestStartupRestoreConfiguration:
 
 
 class TestListDirTool:
-    """Test list_dir tool functionality.
+    """Test list_dir tool functionality."""
 
-    NOTE: These tests are obsolete after the session-based refactor.
-    The list_dir function now requires a session_id and uses kernel execution
-    instead of the Jupyter Contents API. These tests are marked as skipped
-    and should be rewritten or removed.
-    """
-
-    @pytest.mark.skip(reason="Obsolete after session-based refactor")
     @pytest.mark.asyncio
-    async def test_list_dir_success(self):
+    @patch("jupyter_interpreter_mcp.server.ensure_session_available")
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
+    async def test_list_dir_success(
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
+    ):
         """Test successful directory listing."""
+        import time
+
         from jupyter_interpreter_mcp import server
 
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            return_value={
-                "name": "",
-                "path": ".",
-                "type": "directory",
-                "content": [
-                    {
-                        "name": "file1.txt",
-                        "path": "file1.txt",
-                        "type": "file",
-                        "size": 1024,
-                        "last_modified": "2024-01-29T12:00:00Z",
-                    },
-                    {
-                        "name": "data.csv",
-                        "path": "data.csv",
-                        "type": "file",
-                        "size": 2048000,
-                        "last_modified": "2024-01-29T11:30:00Z",
-                    },
-                    {
-                        "name": "subdir",
-                        "path": "subdir",
-                        "type": "directory",
-                        "size": None,
-                        "last_modified": "2024-01-29T11:00:00Z",
-                    },
-                ],
-            }
+        mock_session = Mock(spec=Session)
+        mock_session.directory = "/home/jovyan/sessions/test-session"
+        mock_session.kernel_id = "test-kernel"
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
+
+        mock_remote_client.get_contents.return_value = {
+            "type": "directory",
+            "content": [
+                {
+                    "name": "file1.txt",
+                    "type": "file",
+                    "size": 1024,
+                    "last_modified": "2024-01-29T12:00:00Z",
+                },
+                {
+                    "name": "subdir",
+                    "type": "directory",
+                    "last_modified": "2024-01-29T11:00:00Z",
+                },
+            ],
+        }
+        mock_remote_client.update_session_metadata = AsyncMock()
+
+        result = await server.list_dir(session_id="test-session")
+
+        assert result["error"] == ""
+        assert len(result["result"]) == 2
+        # Directories first, then files alphabetically
+        assert (
+            "directory subdir - modified: 2024-01-29T11:00:00Z" == result["result"][0]
+        )
+        assert (
+            "file file1.txt (1.0 KB) - modified: 2024-01-29T12:00:00Z"
+            == result["result"][1]
         )
 
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
+        # Verify path calculation:
+        # /home/jovyan/sessions/test-session -> sessions/test-session
+        mock_remote_client.get_contents.assert_called_once_with("sessions/test-session")
 
-            assert result["error"] == ""
-            assert len(result["result"]) == 3
-            assert "file file1.txt (1.0 KB)" in result["result"][0]
-            assert "file data.csv (2.0 MB)" in result["result"][1]
-            assert "directory subdir (directory)" in result["result"][2]
-            mock_remote_client.get_contents.assert_called_once_with(".")
-
-    @pytest.mark.skip(reason="Obsolete after session-based refactor")
     @pytest.mark.asyncio
-    async def test_list_dir_empty_directory(self):
+    @patch("jupyter_interpreter_mcp.server.ensure_session_available")
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
+    async def test_list_dir_empty_directory(
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
+    ):
         """Test listing an empty directory."""
+        import time
+
         from jupyter_interpreter_mcp import server
 
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            return_value={
-                "name": "",
-                "path": ".",
-                "type": "directory",
-                "content": [],
-            }
+        mock_session = Mock(spec=Session)
+        mock_session.directory = "/home/jovyan/sessions/test-session"
+        mock_session.kernel_id = "test-kernel"
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
+
+        mock_remote_client.get_contents.return_value = {
+            "type": "directory",
+            "content": [],
+        }
+        mock_remote_client.update_session_metadata = AsyncMock()
+
+        result = await server.list_dir(session_id="test-session")
+
+        assert result["error"] == ""
+        assert result["result"] == ["(empty directory)"]
+
+    @pytest.mark.asyncio
+    @patch("jupyter_interpreter_mcp.server.ensure_session_available")
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
+    async def test_list_dir_not_found(
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
+    ):
+        """Test directory not found."""
+        import time
+
+        from jupyter_interpreter_mcp import server
+        from jupyter_interpreter_mcp.remote import JupyterConnectionError
+
+        mock_session = Mock(spec=Session)
+        mock_session.directory = "/home/jovyan/sessions/test-session"
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
+
+        mock_remote_client.get_contents.side_effect = JupyterConnectionError(
+            "Path not found: ghost"
         )
 
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
+        result = await server.list_dir(session_id="test-session", path="ghost")
 
-            assert result["error"] == ""
-            assert len(result["result"]) == 1
-            assert result["result"][0] == "(empty directory)"
-            mock_remote_client.get_contents.assert_called_once_with(".")
+        assert "Path not found: ghost" in result["error"]
+        assert result["result"] == []
 
-    @pytest.mark.skip(reason="Obsolete after session-based refactor")
     @pytest.mark.asyncio
-    async def test_list_dir_connection_error(self):
-        """Test connection error handling."""
-        from jupyter_interpreter_mcp import server
+    @patch("jupyter_interpreter_mcp.server.ensure_session_available")
+    @patch("jupyter_interpreter_mcp.server.remote_client")
+    @patch("jupyter_interpreter_mcp.server.sessions", new_callable=dict)
+    @patch("jupyter_interpreter_mcp.server.sessions_dir", "/home/jovyan/sessions")
+    @patch("jupyter_interpreter_mcp.server.os.getcwd", return_value="/home/jovyan")
+    async def test_list_dir_permission_denied(
+        self, mock_getcwd, mock_sessions, mock_remote_client, mock_ensure
+    ):
+        """Test permission denied."""
+        import time
 
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            side_effect=JupyterConnectionError("Connection refused")
+        from jupyter_interpreter_mcp import server
+        from jupyter_interpreter_mcp.remote import JupyterAuthError
+
+        mock_session = Mock(spec=Session)
+        mock_session.directory = "/home/jovyan/sessions/test-session"
+        mock_session.last_access = time.time()
+        mock_session.is_expired.return_value = False
+        mock_sessions["test-session"] = mock_session
+
+        mock_remote_client.get_contents.side_effect = JupyterAuthError(
+            "Permission denied"
         )
 
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
+        result = await server.list_dir(session_id="test-session")
 
-            assert "error" in result
-            assert "Connection refused" in result["error"]
-            assert result["result"] == []
-            mock_remote_client.get_contents.assert_called_once_with(".")
-
-    @pytest.mark.skip(reason="Obsolete after session-based refactor")
-    @pytest.mark.asyncio
-    async def test_list_dir_path_not_found(self):
-        """Test 404 path not found error handling."""
-        from jupyter_interpreter_mcp import server
-
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            side_effect=JupyterConnectionError("Path not found: .")
-        )
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            assert "error" in result
-            assert "Path not found" in result["error"]
-            assert result["result"] == []
-            mock_remote_client.get_contents.assert_called_once_with(".")
-
-    @pytest.mark.skip(reason="Obsolete after session-based refactor")
-    @pytest.mark.asyncio
-    async def test_list_dir_permission_denied(self):
-        """Test 403 permission denied error handling."""
-        from jupyter_interpreter_mcp import server
-
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(
-            side_effect=JupyterAuthError("Authorization failed: 403")
-        )
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            assert "error" in result
-            assert "Authorization failed" in result["error"]
-            assert result["result"] == []
-            mock_remote_client.get_contents.assert_called_once_with(".")
-
-    @pytest.mark.skip(reason="Obsolete after session-based refactor")
-    @pytest.mark.asyncio
-    async def test_list_dir_unexpected_exception(self):
-        """Test unexpected exception handling."""
-        from jupyter_interpreter_mcp import server
-
-        mock_remote_client = Mock()
-        mock_remote_client.get_contents = Mock(side_effect=RuntimeError("boom"))
-
-        with patch.object(server, "remote_client", mock_remote_client, create=True):
-            result = await server.list_dir()
-
-            assert "error" in result
-            assert "RuntimeError" in result["error"]
-            assert "boom" in result["error"]
-            assert result["result"] == []
-            mock_remote_client.get_contents.assert_called_once_with(".")
+        assert "Permission denied" in result["error"]
+        assert result["result"] == []

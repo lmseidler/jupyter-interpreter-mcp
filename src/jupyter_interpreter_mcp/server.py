@@ -1,5 +1,8 @@
 import asyncio
+import base64
+import json
 import os
+import posixpath
 import sys
 import time
 import traceback
@@ -17,9 +20,10 @@ from jupyter_interpreter_mcp.remote import (
 from jupyter_interpreter_mcp.session import Session
 
 # Global variables initialized in main()
-remote_client: RemoteJupyterClient
-sessions_dir: str
-session_ttl: float
+remote_client: RemoteJupyterClient = None  # type: ignore
+sessions_dir: str = os.getenv("SESSIONS_DIR", "/home/jovyan/sessions")
+jupyter_root: str = os.getenv("JUPYTER_ROOT", "/home/jovyan")
+session_ttl: float = float(os.getenv("SESSION_TTL", "0"))
 
 mcp = FastMCP(
     name="Code Interpreter",
@@ -116,8 +120,6 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
     :return: Number of sessions restored.
     :rtype: int
     """
-    import json
-
     global sessions, notebooks, remote_client, sessions_dir, session_ttl
 
     # Create a temporary kernel to list session directories
@@ -287,8 +289,9 @@ async def ensure_session_available(session_id: str) -> bool:
     "create_session",
     description=(
         "Creates a new isolated code execution session. Returns a unique session_id "
-        "that must be used in all subsequent operations (execute_code, upload_file, "
-        "download_file, list_dir). Each session has its own directory and kernel."
+        "that must be used in all subsequent operations (execute_code, "
+        "upload_file_path, download_file, list_dir). Each session has its "
+        "own directory and kernel."
     ),
 )
 async def create_session() -> dict[str, str]:
@@ -362,8 +365,8 @@ print(f"Working directory: {{os.getcwd()}}")
 @mcp.tool(
     "execute_code",
     description=(
-        "Executes code (Python or bash) within a persistent session, retaining "
-        "past results (e.g., variables, imports). Similar to a Jupyter notebook. "
+        "Executes code (Python or bash) within a persistent session. Past results "
+        "(e.g., variables, imports) can be reused, similar to a Jupyter notebook. "
         "Requires a valid session_id obtained from create_session. "
         "Bash commands (e.g., 'ls', 'pwd') work directly without wrappers and "
         "can be used to install packages."
@@ -425,118 +428,20 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
 
 
 @mcp.tool(
-    "upload_file",
-    description=(
-        "Uploads a file to the session directory by providing its content directly. "
-        "Requires a valid session_id. Supports both text and binary content "
-        "(binary should be base64-encoded). "
-        "NOTE: Files must be uploaded to the sandbox before they can be accessed by "
-        "code running in the interpreter -- the sandbox is an isolated environment "
-        "and cannot access files on your host filesystem. "
-        "For large local files, prefer upload_file_path which streams the file "
-        "from a host path without requiring the content in the request."
-    ),
-)
-async def upload_file(
-    session_id: str, content: str, destination_path: str, is_binary: bool = False
-) -> dict[str, str]:
-    """Uploads a file to the session directory.
-
-    Writes the provided content to the sandbox session directory.  The sandbox
-    is an isolated environment -- files must be uploaded before code in the
-    interpreter can access them.
-
-    For large local files on the host filesystem, prefer
-    :func:`upload_file_path` which streams the file by path without requiring
-    the content in the request payload.
-
-    :param session_id: Valid session identifier.
-    :type session_id: str
-    :param content: File content (text or base64-encoded binary).
-    :type content: str
-    :param destination_path: Destination path relative to session directory.
-    :type destination_path: str
-    :param is_binary: Whether content is base64-encoded binary.
-    :type is_binary: bool
-    :return: Dictionary with 'status' or 'error' key.
-    :rtype: dict[str, str]
-    """
-    from jupyter_interpreter_mcp.session import validate_path
-
-    global sessions, notebooks
-
-    try:
-        # Restore from disk if not already loaded in memory
-        await ensure_session_available(session_id)
-
-        # Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
-
-        # Validate path
-        validated_path = validate_path(session.directory, destination_path)
-
-        # Create upload code
-        code = f"""
-import os
-import base64
-
-destination = {repr(validated_path)}
-os.makedirs(os.path.dirname(destination), exist_ok=True)
-
-"""
-        if is_binary:
-            code += f"""
-content_bytes = base64.b64decode({repr(content)})
-with open(destination, 'wb') as f:
-    f.write(content_bytes)
-"""
-        else:
-            code += f"""
-with open(destination, 'w') as f:
-    f.write({repr(content)})
-"""
-
-        code += """
-print(f"File written successfully to {destination}")
-"""
-
-        # Execute upload
-        result = await notebook.execute_new_code(code)
-
-        if result["error"]:
-            return {"error": "; ".join(result["error"])}
-
-        # Update last access
-        session.touch()
-        await remote_client.update_session_metadata(
-            session.kernel_id, session.directory, session.last_access
-        )
-
-        return {"status": "success", "path": destination_path}
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        return {"error": f"Upload failed: {str(e)}"}
-
-
-@mcp.tool(
     "download_file",
     description=(
-        "Downloads a file from the session directory and returns its full content. "
-        "Requires a valid session_id. Returns file content as text or "
-        "base64-encoded binary depending on file type. "
-        "For large files or when you only need the path to reference the file in "
-        "code, prefer get_sandbox_path which returns the sandbox path and metadata "
-        "without transferring content."
+        "Downloads a file from the session directory and returns its "
+        "full content. Requires a valid session_id. Returns file "
+        "content as text or base64-encoded binary depending on file "
+        "type. For large files, use list_dir to discover paths and "
+        "reference them directly in execute_code instead of "
+        "downloading."
     ),
 )
 async def download_file(session_id: str, path: str) -> dict[str, str]:
     """Downloads a file from the session directory.
 
-    Returns the full content of a file from the sandbox.  For large files
-    or when you only need to reference the file in subsequent code
-    execution, prefer :func:`get_sandbox_path` which returns the path and
-    metadata without transferring the file content.
+    Returns the full content of a file from the sandbox.
 
     :param session_id: Valid session identifier.
     :type session_id: str
@@ -545,85 +450,73 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
     :return: Dictionary with 'content', 'encoding' ('text' or 'base64'), or 'error'.
     :rtype: dict[str, str]
     """
-    import base64
-
+    from jupyter_interpreter_mcp.remote import JupyterConnectionError
     from jupyter_interpreter_mcp.session import detect_content_type, validate_path
 
-    global sessions, notebooks
+    global sessions, remote_client, jupyter_root
 
     try:
         # Restore from disk if not already loaded in memory
         await ensure_session_available(session_id)
 
-        # Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
+        # Validate session under lock (no notebook needed)
+        async with registry_lock:
+            if session_id not in sessions:
+                return {"error": f"Session {session_id} not found"}
+            session = sessions[session_id]
+            if session.is_expired(session_ttl):
+                return {"error": f"Session {session_id} has expired"}
 
         # Validate path
         validated_path = validate_path(session.directory, path)
 
-        # Read file content via kernel
-        code = f"""
-import os
-import base64
+        # Derive the Contents API path (relative to jupyter_root).
+        # Use posixpath to guarantee forward-slash separators regardless of
+        # the host OS, since the remote Jupyter server is always POSIX.
+        jupyter_root_abs = posixpath.normpath(jupyter_root)
+        api_path = posixpath.relpath(validated_path, jupyter_root_abs)
 
-file_path = {repr(validated_path)}
-if not os.path.exists(file_path):
-    print("FILE_NOT_FOUND")
-else:
-    with open(file_path, 'rb') as f:
-        content_bytes = f.read()
-
-    # Return base64-encoded content
-    print("FILE_CONTENT_START")
-    print(base64.b64encode(content_bytes).decode('ascii'))
-    print("FILE_CONTENT_END")
-"""
-
-        result = await notebook.execute_new_code(code)
-
-        if result["error"]:
-            return {"error": "; ".join(result["error"])}
-
-        output = "".join(result["result"])
-
-        if "FILE_NOT_FOUND" in output:
+        # Fetch file content via Contents API
+        try:
+            contents = remote_client.get_file_contents(api_path)
+        except JupyterConnectionError:
             return {"error": f"File not found: {path}"}
 
-        # Extract base64 content
-        if "FILE_CONTENT_START" in output and "FILE_CONTENT_END" in output:
-            start_idx = output.index("FILE_CONTENT_START") + len("FILE_CONTENT_START")
-            end_idx = output.index("FILE_CONTENT_END")
-            base64_content = output[start_idx:end_idx].strip()
+        file_format = contents.get("format", "text")
+        raw_content = contents.get("content", "")
+        filename = os.path.basename(path)
 
-            # Decode to check content type
-            content_bytes = base64.b64decode(base64_content)
+        if file_format == "base64":
+            # Binary file — decode to check content type then return appropriately
+            content_bytes = base64.b64decode(raw_content)
             content_type = detect_content_type(path, content_bytes)
-
             if content_type == "binary":
-                # Return as base64
-                response = {
-                    "content": base64_content,
+                response: dict[str, str] = {
+                    "content": raw_content,
                     "encoding": "base64",
-                    "filename": os.path.basename(path),
+                    "filename": filename,
                 }
             else:
-                # Decode as text
-                text_content = content_bytes.decode("utf-8")
                 response = {
-                    "content": text_content,
+                    "content": content_bytes.decode("utf-8"),
                     "encoding": "text",
-                    "filename": os.path.basename(path),
+                    "filename": filename,
                 }
-
-            # Update last access
-            session.touch()
-            await remote_client.update_session_metadata(
-                session.kernel_id, session.directory, session.last_access
-            )
-
-            return response
         else:
-            return {"error": "Failed to read file content"}
+            # Text file
+            response = {
+                "content": raw_content,
+                "encoding": "text",
+                "filename": filename,
+            }
+
+        # Update last access
+        session.touch()
+        await remote_client.update_session_metadata(
+            session.kernel_id, session.directory, session.last_access
+        )
+
+        return response
 
     except ValueError as e:
         return {"error": str(e)}
@@ -631,15 +524,12 @@ else:
         return {"error": f"Download failed: {str(e)}"}
 
 
-UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024  # 8 MB
-
-
 @mcp.tool(
     "upload_file_path",
     description=(
         "Uploads a file from the host filesystem to the session directory using "
-        "a local absolute path. Streams the file in 8 MB chunks, making it "
-        "suitable for large files. Requires a valid session_id. "
+        "a local absolute path. Uploads files up to 100 MB via the Jupyter "
+        "Contents API. Requires a valid session_id. "
         "The host_path must be an absolute path within the allowed upload "
         "directories. Sensitive files (.env, .ssh/, credentials, etc.) are "
         "blocked. Set overwrite=False to prevent overwriting existing files. "
@@ -656,8 +546,8 @@ async def upload_file_path(
     """Upload a file from the host filesystem to the sandbox by path.
 
     Reads the file at *host_path* on the host, validates security
-    constraints, and streams the content to the sandbox session directory
-    at *destination_path* using chunked writes.
+    constraints, and uploads the content to the sandbox session directory
+    at *destination_path* via the Jupyter Contents API (single PUT request).
 
     :param session_id: Valid session identifier.
     :type session_id: str
@@ -675,22 +565,25 @@ async def upload_file_path(
     :return: Dictionary with ``sandbox_path`` on success or ``error`` key.
     :rtype: dict[str, str]
     """
-    import base64
-
     from jupyter_interpreter_mcp.session import (
         is_sensitive_file,
         validate_host_path,
         validate_path,
     )
 
-    global sessions, notebooks
+    global sessions, remote_client, jupyter_root
 
     try:
         # Restore from disk if not already loaded in memory
         await ensure_session_available(session_id)
 
-        # Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
+        # Validate session under lock (no notebook needed)
+        async with registry_lock:
+            if session_id not in sessions:
+                return {"error": f"Session {session_id} not found"}
+            session = sessions[session_id]
+            if session.is_expired(session_ttl):
+                return {"error": f"Session {session_id} has expired"}
 
         # 3.1 Validate host_path is absolute (done inside validate_host_path)
         # 3.2 Security: check host_path against allowed directories
@@ -719,17 +612,15 @@ async def upload_file_path(
         # 3.6 Validate destination path within session directory
         validated_dest = validate_path(session.directory, destination_path)
 
-        # 3.7 Overwrite protection
+        # Derive the Contents API path (relative to jupyter_root).
+        # Use posixpath to guarantee forward-slash separators regardless of
+        # the host OS, since the remote Jupyter server is always POSIX.
+        jupyter_root_abs = posixpath.normpath(jupyter_root)
+        api_dest = posixpath.relpath(validated_dest, jupyter_root_abs)
+
+        # 3.7 Overwrite protection via Contents API existence check
         if not overwrite:
-            check_code = f"""
-import os
-print("EXISTS" if os.path.exists({repr(validated_dest)}) else "NOT_EXISTS")
-"""
-            check_result = await notebook.execute_new_code(check_code)
-            if check_result["error"]:
-                return {"error": "; ".join(check_result["error"])}
-            check_output = "".join(check_result["result"]).strip()
-            if "EXISTS" in check_output and "NOT_EXISTS" not in check_output:
+            if remote_client.check_exists(api_dest):
                 return {
                     "error": (
                         f"Destination already exists: {destination_path} "
@@ -737,49 +628,30 @@ print("EXISTS" if os.path.exists({repr(validated_dest)}) else "NOT_EXISTS")
                     )
                 }
 
-        # 3.8 Chunked file streaming
-        # Ensure destination directory exists
-        mkdir_code = f"""
-import os
-os.makedirs(os.path.dirname({repr(validated_dest)}), exist_ok=True)
-print("DIR_READY")
-"""
-        mkdir_result = await notebook.execute_new_code(mkdir_code)
-        if mkdir_result["error"]:
-            return {"error": "; ".join(mkdir_result["error"])}
+        # 3.8 Ensure destination parent directory exists via Contents API
+        parent_api_path = os.path.dirname(api_dest)
+        if parent_api_path:
+            remote_client.create_directory(parent_api_path)
 
-        # Stream the file in chunks
+        # 3.9 Read the full file and upload via a single PUT request.
+        # The Jupyter Contents API delivers the file as a single JSON payload;
+        # Tornado's default max_body_size is 100 MB. Reject files larger than
+        # this to avoid silent OOM / server-side rejection.
+        MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
         file_size = os.path.getsize(resolved_host)
-        bytes_sent = 0
+        if file_size > MAX_UPLOAD_BYTES:
+            return {
+                "error": (
+                    f"File too large to upload ({file_size:,} bytes). "
+                    f"Maximum supported size is {MAX_UPLOAD_BYTES:,} bytes (100 MB)."
+                )
+            }
 
         with open(resolved_host, "rb") as f:
-            first_chunk = True
-            while True:
-                chunk = f.read(UPLOAD_CHUNK_SIZE)
-                if not chunk:
-                    break
+            file_bytes = f.read()
 
-                chunk_b64 = base64.b64encode(chunk).decode("ascii")
-                mode = "wb" if first_chunk else "ab"
-
-                write_code = f"""
-import base64
-chunk_data = base64.b64decode({repr(chunk_b64)})
-with open({repr(validated_dest)}, {repr(mode)}) as f:
-    f.write(chunk_data)
-print(f"Wrote {{len(chunk_data)}} bytes")
-"""
-                write_result = await notebook.execute_new_code(write_code)
-                if write_result["error"]:
-                    return {
-                        "error": (
-                            f"Upload failed during streaming: "
-                            f"{'; '.join(write_result['error'])}"
-                        )
-                    }
-
-                bytes_sent += len(chunk)
-                first_chunk = False
+        file_b64 = base64.b64encode(file_bytes).decode("ascii")
+        remote_client.put_contents(api_dest, file_b64, format="base64")
 
         # Update last access
         session.touch()
@@ -787,119 +659,17 @@ print(f"Wrote {{len(chunk_data)}} bytes")
             session.kernel_id, session.directory, session.last_access
         )
 
-        # 3.9 Return success with sandbox_path label
+        # Return success with relative sandbox_path so agents can
+        # reference it directly in execute_code calls.
         return {
             "status": "success",
-            "sandbox_path": validated_dest,
+            "sandbox_path": destination_path,
             "size": str(file_size),
         }
     except ValueError as e:
         return {"error": str(e)}
     except Exception as e:
         return {"error": f"Upload by path failed: {str(e)}"}
-
-
-@mcp.tool(
-    "get_sandbox_path",
-    description=(
-        "Returns the absolute sandbox path and metadata for a file in the session "
-        "directory without transferring its content. Requires a valid session_id. "
-        "Use this tool instead of download_file when you only need the file's "
-        "path for referencing in code, or when the file is too large to include "
-        "in context. Returns sandbox_path, size (bytes), and last_modified "
-        "timestamp."
-    ),
-)
-async def get_sandbox_path(session_id: str, file_path: str) -> dict[str, str]:
-    """Get the sandbox absolute path and metadata for a file.
-
-    Validates that the file exists within the session directory and
-    returns its absolute sandbox path along with file metadata (size in
-    bytes and last-modified timestamp) without reading the file content.
-
-    :param session_id: Valid session identifier.
-    :type session_id: str
-    :param file_path: File path relative to the session directory.
-    :type file_path: str
-    :return: Dictionary with ``sandbox_path``, ``size``, and
-        ``last_modified`` on success, or ``error`` key.
-    :rtype: dict[str, str]
-    """
-    from jupyter_interpreter_mcp.session import validate_path
-
-    global sessions, notebooks
-
-    try:
-        # Restore from disk if not already loaded in memory
-        await ensure_session_available(session_id)
-
-        # 4.1 Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
-
-        # 4.2 Path validation: ensure file is within session directory
-        validated_path = validate_path(session.directory, file_path)
-
-        # 4.3 File existence check + 4.4 metadata retrieval via kernel
-        code = f"""
-import os
-import json
-
-file_path = {repr(validated_path)}
-if not os.path.exists(file_path):
-    print("FILE_NOT_FOUND")
-elif not os.path.isfile(file_path):
-    print("NOT_A_FILE")
-else:
-    stat = os.stat(file_path)
-    info = {{
-        "sandbox_path": file_path,
-        "size": stat.st_size,
-        "last_modified": stat.st_mtime
-    }}
-    print("METADATA_START")
-    print(json.dumps(info))
-    print("METADATA_END")
-"""
-        result = await notebook.execute_new_code(code)
-
-        if result["error"]:
-            return {"error": "; ".join(result["error"])}
-
-        output = "".join(result["result"])
-
-        if "FILE_NOT_FOUND" in output:
-            return {"error": f"File not found in sandbox: {file_path}"}
-        if "NOT_A_FILE" in output:
-            return {"error": f"Path is not a file: {file_path}"}
-
-        # Parse metadata
-        if "METADATA_START" in output and "METADATA_END" in output:
-            import json
-
-            start_idx = output.index("METADATA_START") + len("METADATA_START")
-            end_idx = output.index("METADATA_END")
-            metadata_json = output[start_idx:end_idx].strip()
-            metadata = json.loads(metadata_json)
-
-            # Update last access
-            session.touch()
-            await remote_client.update_session_metadata(
-                session.kernel_id, session.directory, session.last_access
-            )
-
-            # 4.5 + 4.6 Return sandbox_path and metadata
-            return {
-                "sandbox_path": metadata["sandbox_path"],
-                "size": str(metadata["size"]),
-                "last_modified": str(metadata["last_modified"]),
-            }
-        else:
-            return {"error": "Failed to retrieve file metadata"}
-
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        return {"error": f"Get sandbox path failed: {str(e)}"}
 
 
 @mcp.tool(
@@ -921,14 +691,19 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
     """
     from jupyter_interpreter_mcp.session import validate_path
 
-    global sessions, notebooks
+    global sessions, notebooks, remote_client, sessions_dir, jupyter_root
 
     try:
         # Restore from disk if not already loaded in memory
         await ensure_session_available(session_id)
 
-        # Validate session and get objects under lock
-        session, notebook = await get_session_and_notebook(session_id)
+        # Validate session under lock
+        async with registry_lock:
+            if session_id not in sessions:
+                return {"error": f"Session {session_id} not found", "result": []}
+            session = sessions[session_id]
+            if session.is_expired(session_ttl):
+                return {"error": f"Session {session_id} has expired", "result": []}
 
         # Validate path
         if path:
@@ -936,82 +711,101 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
         else:
             validated_path = session.directory
 
-        # List directory via kernel execution
-        code = f"""
-import os
-import json
+        # Derive the Contents API path from the remote Jupyter root.
+        # jupyter_root is the root directory on the remote Jupyter server
+        # (e.g. /home/jovyan). The Contents API expects paths relative to
+        # this root. Use posixpath to guarantee forward-slash separators
+        # regardless of the host OS.
+        jupyter_root_abs = posixpath.normpath(jupyter_root)
+        sessions_dir_abs = posixpath.normpath(sessions_dir)
+        validated_abs = posixpath.normpath(validated_path)
 
-dir_path = {repr(validated_path)}
-if not os.path.exists(dir_path):
-    print("DIR_NOT_FOUND")
-elif not os.path.isdir(dir_path):
-    print("NOT_A_DIRECTORY")
-else:
-    entries = []
-    for item in sorted(os.listdir(dir_path)):
-        full_path = os.path.join(dir_path, item)
-        if os.path.isdir(full_path):
-            entries.append({{'type': 'directory', 'name': item}})
-        else:
-            size = os.path.getsize(full_path)
-            entries.append({{'type': 'file', 'name': item, 'size': size}})
+        try:
+            # Ensure sessions_dir is under the Jupyter root
+            if (
+                posixpath.commonpath([jupyter_root_abs, sessions_dir_abs])
+                != jupyter_root_abs
+            ):
+                return {
+                    "error": (
+                        f"sessions_dir ({sessions_dir_abs}) is not "
+                        f"under the Jupyter root "
+                        f"({jupyter_root_abs}); "
+                        "please check configuration."
+                    ),
+                    "result": [],
+                }
 
-    print("DIR_LISTING_START")
-    print(json.dumps(entries))
-    print("DIR_LISTING_END")
-"""
+            # Ensure the requested path is also under the Jupyter root
+            if (
+                posixpath.commonpath([jupyter_root_abs, validated_abs])
+                != jupyter_root_abs
+            ):
+                return {
+                    "error": (
+                        f"Path {validated_abs} is outside the Jupyter root "
+                        f"({jupyter_root_abs}); refusing to access it."
+                    ),
+                    "result": [],
+                }
+        except ValueError:
+            # Paths on different drives or otherwise incomparable
+            return {
+                "error": (
+                    "Invalid path configuration: "
+                    "sessions_dir and Jupyter root "
+                    "are incompatible."
+                ),
+                "result": [],
+            }
 
-        result = await notebook.execute_new_code(code)
+        api_path = posixpath.relpath(validated_abs, jupyter_root_abs)
+        # Get contents via Jupyter Contents API
+        # Using sync method from RemoteJupyterClient as per codebase pattern
+        response = remote_client.get_contents(api_path)
 
-        if result["error"]:
-            return {"error": "; ".join(result["error"]), "result": []}
-
-        output = "".join(result["result"])
-
-        if "DIR_NOT_FOUND" in output:
-            return {"error": f"Directory not found: {path}", "result": []}
-        if "NOT_A_DIRECTORY" in output:
+        if response.get("type") != "directory":
             return {"error": f"Not a directory: {path}", "result": []}
 
-        # Extract listing
-        if "DIR_LISTING_START" in output and "DIR_LISTING_END" in output:
-            start_idx = output.index("DIR_LISTING_START") + len("DIR_LISTING_START")
-            end_idx = output.index("DIR_LISTING_END")
-            listing_json = output[start_idx:end_idx].strip()
+        entries = response.get("content", [])
+        result_lines = []
 
-            import json
-
-            entries = json.loads(listing_json)
-
-            # Format output
-            result_lines = []
-            if not entries:
-                result_lines.append("(empty directory)")
-            else:
-                for entry in entries:
-                    item_type = entry["type"]
-                    name = entry["name"]
-                    if item_type == "directory":
-                        result_lines.append(f"directory {name}")
-                    else:
-                        size = entry.get("size", 0)
-                        if size < 1024:
-                            size_str = f"{size} B"
-                        elif size < 1024 * 1024:
-                            size_str = f"{size / 1024:.1f} KB"
-                        else:
-                            size_str = f"{size / (1024 * 1024):.1f} MB"
-                        result_lines.append(f"file {name} ({size_str})")
-
-            # Update last access
-            session.touch()
-            await remote_client.update_session_metadata(
-                session.kernel_id, session.directory, session.last_access
+        if not entries:
+            result_lines.append("(empty directory)")
+        else:
+            # Sort entries: directories first, then alphabetically
+            sorted_entries = sorted(
+                entries,
+                key=lambda x: (x.get("type") != "directory", x.get("name", "").lower()),
             )
 
-            return {"error": "", "result": result_lines}
-        else:
-            return {"error": "Failed to retrieve directory listing", "result": []}
+            for entry in sorted_entries:
+                name = entry.get("name", "unknown")
+                item_type = entry.get("type", "unknown")
+                mtime = entry.get("last_modified", "unknown")
+
+                if item_type == "directory":
+                    result_lines.append(f"directory {name} - modified: {mtime}")
+                else:
+                    size = entry.get("size", 0)
+                    if size < 1024:
+                        size_str = f"{size} B"
+                    elif size < 1024 * 1024:
+                        size_str = f"{size / 1024:.1f} KB"
+                    else:
+                        size_str = f"{size / (1024 * 1024):.1f} MB"
+                    result_lines.append(
+                        f"{item_type} {name} ({size_str}) - modified: {mtime}"
+                    )
+
+        # Update last access
+        session.touch()
+        # Still update metadata on remote side for persistence
+        await remote_client.update_session_metadata(
+            session.kernel_id, session.directory, session.last_access
+        )
+
+        return {"error": "", "result": result_lines}
 
     except ValueError as e:
         return {"error": str(e), "result": []}
@@ -1051,6 +845,14 @@ def main() -> None:
         help="Base directory for session storage (default: %(default)s)",
     )
     parser.add_argument(
+        "--jupyter-root",
+        default=os.getenv("JUPYTER_ROOT", "/home/jovyan"),
+        help=(
+            "Root directory of the remote Jupyter server filesystem. "
+            "Used to derive Contents API paths. (default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
         "--session-ttl",
         type=float,
         default=float(os.getenv("SESSION_TTL", "0")),
@@ -1067,6 +869,24 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--allowed-dir",
+        action="append",
+        dest="allowed_dirs",
+        metavar="PATH",
+        help=(
+            "Allow file uploads from this directory (can be specified multiple times). "
+            "Takes precedence over ALLOWED_UPLOAD_DIRS environment variable. "
+            "If neither --allowed-dir nor ALLOWED_UPLOAD_DIRS is set, uploads are "
+            "only allowed from the current working directory."
+        ),
+    )
+    parser.add_argument(
+        "--allow-all",
+        dest="allow_all",
+        action="store_true",
+        help="Allow uploads from all directories.",
+    )
+    parser.add_argument(
         "--version",
         "-v",
         action="version",
@@ -1076,15 +896,33 @@ def main() -> None:
     # Parse arguments (CLI args will override the defaults)
     args = parser.parse_args()
 
+    # Configure allowed upload directories from CLI args only.
+    # The env var (ALLOWED_UPLOAD_DIRS) and CWD fallback are handled lazily
+    # by get_allowed_upload_dirs() in session.py.
+    from jupyter_interpreter_mcp.session import (
+        get_allowed_upload_dirs,
+        set_allowed_upload_dirs,
+    )
+
+    if args.allow_all:
+        set_allowed_upload_dirs([])
+        print("Allowing uploads from all directories")
+    elif args.allowed_dirs:
+        set_allowed_upload_dirs(args.allowed_dirs)
+
+    if not args.allow_all:
+        print(f"Allowed upload directories: {', '.join(get_allowed_upload_dirs())}")
+
     # Build configuration with precedence: CLI args > env vars > defaults
     # argparse already handles this via default= parameter
     base_url = args.jupyter_base_url
     token = args.jupyter_token
     sessions_dir_path = args.sessions_dir
+    jupyter_root_path = args.jupyter_root
     ttl = args.session_ttl
 
     # Initialize remote client
-    global remote_client, sessions_dir, session_ttl
+    global remote_client, sessions_dir, jupyter_root, session_ttl
     try:
         if not token:
             raise ValueError(
@@ -1093,6 +931,7 @@ def main() -> None:
             )
         remote_client = RemoteJupyterClient(base_url=base_url, auth_token=token)
         sessions_dir = sessions_dir_path
+        jupyter_root = jupyter_root_path
         session_ttl = ttl
         # Validate connection on startup
         remote_client.validate_connection()

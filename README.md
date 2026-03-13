@@ -106,7 +106,7 @@ The server uses a session-based architecture where each session has:
 
 1. **Create a session** using `create_session`
 2. **Execute code** in the session using `execute_code`
-3. **Upload/download files** within the session directory using `upload_file` and `download_file`
+3. **Upload/download files** within the session directory using `upload_file_path` and `download_file`
 4. **List files** in the session directory using `list_dir`
 
 Sessions automatically expire after the configured TTL (time-to-live) period.
@@ -163,43 +163,6 @@ result = execute_code(code="print(x * 2)", session_id=session_id)
 result = execute_code(code="ls -la", session_id=session_id)
 ```
 
-### upload_file
-
-Upload a file to the session directory. Automatically detects binary vs text content.
-
-**Parameters:**
-- `session_id` (string, required): The session ID
-- `destination_path` (string, required): Relative path within session directory (supports subdirectories)
-- `content` (string, required): File content (base64-encoded for binary, plain text otherwise)
-- `is_binary` (boolean, optional): Whether the content is base64-encoded binary (default: `false`)
-
-**Returns:**
-A dictionary containing:
-- `status` (string): `"success"` if the upload succeeded
-- `path` (string): Relative path where file was written
-
-**Example usage:**
-```python
-# Upload text file
-upload_file(
-    session_id=session_id,
-    destination_path="script.py",
-    content="print('Hello, World!')",
-    is_binary=False
-)
-
-# Upload binary file (e.g., image)
-import base64
-with open("image.png", "rb") as f:
-    content = base64.b64encode(f.read()).decode()
-upload_file(
-    session_id=session_id,
-    destination_path="images/logo.png",
-    content=content,
-    is_binary=True
-)
-```
-
 ### download_file
 
 Download a file from the session directory.
@@ -248,8 +211,7 @@ result = list_dir(session_id=session_id, path="images")
 ```
 
 ### upload_file_path
-
-Upload a file from the host filesystem to the session directory by providing its absolute path. The file is streamed in 8 MB chunks, making it suitable for large files. Security restrictions apply -- only files within allowed directories are permitted, and sensitive files (`.env`, `.ssh/`, credentials, etc.) are blocked.
+Upload a file from the host filesystem to the session directory by providing its absolute path. Only files within allowed directories are permitted, and sensitive files (`.env`, `.ssh/`, credentials, etc.) are blocked.
 
 **Parameters:**
 - `session_id` (string, required): The session ID
@@ -273,51 +235,99 @@ result = upload_file_path(
 )
 ```
 
-### get_sandbox_path
-
-Get the absolute sandbox path and metadata for a file in the session directory without transferring its content. Use this instead of `download_file` when you only need the file path for referencing in code, or when the file is too large to include in context.
-
-**Parameters:**
-- `session_id` (string, required): The session ID
-- `file_path` (string, required): Relative path within session directory
-
-**Returns:**
-A dictionary containing:
-- `sandbox_path` (string): Absolute path inside the sandbox
-- `size` (string): File size in bytes
-- `last_modified` (string): Last modified timestamp (Unix epoch)
-
-**Example usage:**
-```python
-result = get_sandbox_path(session_id=session_id, file_path="data/dataset.csv")
-# Use the sandbox_path in subsequent code execution
-execute_code(
-    code=f"import pandas as pd; df = pd.read_csv('{result['sandbox_path']}')",
-    session_id=session_id
-)
-```
-
 ## Path Security Configuration
 
-The `upload_file_path` tool restricts which host filesystem paths can be uploaded for security. By default, only files within the current working directory are allowed.
+The `upload_file_path` tool restricts which host filesystem paths can be uploaded for security. You can configure allowed directories using either a command-line argument or an environment variable.
 
-### ALLOWED_UPLOAD_DIRS
+### Configuration Methods (in order of precedence)
 
-Set the `ALLOWED_UPLOAD_DIRS` environment variable to a colon-separated list of absolute directory paths to control which directories are permitted:
+#### 1. `--allowed-dir` CLI Argument
+
+Pass one or more `--allowed-dir` arguments when starting the server:
+
+```bash
+# Allow uploads from a single directory
+jupyter-interpreter-mcp --allowed-dir /home/user/projects
+
+# Allow uploads from multiple directories
+jupyter-interpreter-mcp \
+  --allowed-dir /home/user/projects \
+  --allowed-dir /home/user/data
+```
+
+#### 2. `ALLOWED_UPLOAD_DIRS` Environment Variable
+
+Set the `ALLOWED_UPLOAD_DIRS` environment variable to a colon-separated list of absolute directory paths:
 
 ```bash
 # Allow uploads from multiple directories
-ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
+export ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
 
-# Allow uploads from a single directory
-ALLOWED_UPLOAD_DIRS=/home/user/projects
+# Or in your .env file
+ALLOWED_UPLOAD_DIRS=/home/user/projects:/home/user/data
 ```
 
-When unset, defaults to the current working directory of the MCP server process.
+#### 3. Allow all
+
+Using the `--allow-all` flag will allow uploads from any directory on the host filesystem.
+
+#### 4. Default Behavior
+
+**When neither `--allowed-dir` nor `ALLOWED_UPLOAD_DIRS` is set, uploads are allowed only from the current working directory** on the host filesystem. Sensitive file protection (see below) is always active regardless of this setting.
+
+### MCP Client Configuration Examples
+
+#### OpenCode
+
+In your `opencode.jsonc` (global config at `~/.config/opencode/opencode.json` or per-project):
+
+```jsonc
+{
+  "mcp": {
+    "jupyter-interpreter": {
+      "type": "local",
+      "command": [
+        "uv", "run", "--project", "/path/to/jupyter-interpreter-mcp",
+        "jupyter-interpreter-mcp",
+        "--allowed-dir", "/home/user/projects",
+        "--jupyter-base-url", "http://localhost:8888",
+        // ... other args
+      ],
+      // Or use environment variables:
+      "environment": {
+        "ALLOWED_UPLOAD_DIRS": "/home/user/projects:/home/user/data"
+      }
+    }
+  }
+}
+```
+
+For most use cases, either use the environment variable approach with hardcoded paths, or rely on the CWD-only default with sensitive file protection.
+
+#### Claude Desktop / Cursor
+
+In `claude_desktop_config.json` or `.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "jupyter-interpreter": {
+      "command": "jupyter-interpreter-mcp",
+      "args": [
+        "--allowed-dir", "/home/user/projects",
+        "--jupyter-base-url", "http://localhost:8888"
+      ],
+      "env": {
+        "JUPYTER_TOKEN": "your-token-here"
+      }
+    }
+  }
+}
+```
 
 ### Sensitive File Protection
 
-Regardless of allowed directories, the following file patterns are always blocked:
+Regardless of allowed directories, the following file patterns are **always blocked** from upload:
 - `.env` files (e.g., `.env`, `.env.local`)
 - SSH keys and configuration (`.ssh/`)
 - GPG keys (`.gnupg/`)
