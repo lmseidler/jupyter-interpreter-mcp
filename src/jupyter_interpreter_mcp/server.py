@@ -1070,6 +1070,15 @@ async def edit_file(
                 )
             }
 
+        # Only plain-text files with string content are supported.
+        if file_format != "text" or not isinstance(raw_content, str):
+            return {
+                "error": (
+                    f"Unsupported file format for editing: {file_format!r}. "
+                    "Only text files with string content can be edited."
+                )
+            }
+
         # Apply the replacement.
         try:
             new_content, count = find_and_replace(
