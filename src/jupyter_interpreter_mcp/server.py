@@ -149,7 +149,33 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
             continue
         meta_api_path = f"{sessions_api_path}/{name}/session_meta.json"
         try:
+            # Primary attempt: use the current metadata filename.
             meta_contents = remote_client.get_file_contents(meta_api_path)
+        except JupyterConnectionError:
+            # Backward-compatible fallback: look for any legacy JSON metadata file
+            # in the session directory (from previous versions that used a different
+            # metadata filename).
+            try:
+                session_dir_api_path = f"{sessions_api_path}/{name}"
+                session_dir_contents = remote_client.get_contents(session_dir_api_path)
+                legacy_meta_name: str | None = None
+                for item in session_dir_contents.get("content", []):
+                    if item.get("type") == "file" and item.get("name", "").endswith(".json"):
+                        legacy_meta_name = item["name"]
+                        break
+                if legacy_meta_name is None:
+                    raise JupyterConnectionError(
+                        f"No metadata JSON file found for session {name}"
+                    )
+                legacy_meta_api_path = f"{sessions_api_path}/{name}/{legacy_meta_name}"
+                meta_contents = remote_client.get_file_contents(legacy_meta_api_path)
+            except Exception as e:
+                print(
+                    f"Skipping {name}: could not read legacy session metadata ({e})",
+                    file=sys.stderr,
+                )
+                continue
+        try:
             metadata = json.loads(meta_contents["content"])
             sessions_to_restore.append(
                 {
@@ -159,7 +185,7 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
                     "directory": posixpath.join(posixpath.normpath(sessions_dir), name),
                 }
             )
-        except (JupyterConnectionError, json.JSONDecodeError, KeyError) as e:
+        except (json.JSONDecodeError, KeyError) as e:
             print(
                 f"Skipping {name}: could not read session metadata ({e})",
                 file=sys.stderr,
