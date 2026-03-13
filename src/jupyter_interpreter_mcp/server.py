@@ -123,11 +123,19 @@ async def restore_sessions_from_disk(target_session_id: str | None = None) -> in
     """
     global sessions, notebooks, remote_client, sessions_dir, jupyter_root, session_ttl
 
-    # Compute the Contents API path for the sessions directory
-    sessions_api_path = posixpath.relpath(
-        posixpath.normpath(sessions_dir),
-        posixpath.normpath(jupyter_root),
-    )
+    # Compute the Contents API path for the sessions directory, ensuring it is
+    # within the configured Jupyter root. _to_api_path will raise ValueError
+    # if the path is invalid or outside the allowed root.
+    try:
+        sessions_api_path = remote_client._to_api_path(
+            posixpath.normpath(sessions_dir),
+        )
+    except ValueError as e:
+        print(
+            f"Invalid sessions directory '{sessions_dir}': {e}",
+            file=sys.stderr,
+        )
+        return 0
 
     # List session directories via the Contents API
     try:
