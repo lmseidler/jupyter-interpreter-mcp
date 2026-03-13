@@ -41,23 +41,23 @@ async def _ensure_session(monkeypatch):
     reason="JUPYTER_BASE_URL and JUPYTER_TOKEN required for integration tests",
 )
 async def test_large_file_upload_streaming(monkeypatch):
-    """8.1 - Large file upload (>100MB) to verify chunked streaming.
+    """8.1 - Large file upload near the 100 MB limit.
 
-    Creates a 100+ MB file on the host and uploads it to the sandbox,
-    confirming the file arrives intact via size comparison.
+    Creates a file just under the 100 MB limit and uploads it to the
+    sandbox, confirming the file arrives intact via size comparison.
     """
     session_id = await _ensure_session(monkeypatch)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Create a 101 MB file filled with repeating bytes
+        # Create a 99 MB file filled with repeating bytes (just under 100 MB limit)
         large_file = Path(tmpdir) / "large_test_file.bin"
         chunk = b"X" * (1024 * 1024)  # 1 MB
         with open(large_file, "wb") as f:
-            for _ in range(101):
+            for _ in range(99):
                 f.write(chunk)
 
         host_file_size = large_file.stat().st_size
-        assert host_file_size > 100 * 1024 * 1024
+        assert host_file_size > 90 * 1024 * 1024
 
         with patch.dict("os.environ", {"ALLOWED_UPLOAD_DIRS": tmpdir}):
             result = await server.upload_file_path(

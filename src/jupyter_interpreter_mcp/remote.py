@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import posixpath
 import uuid
 from typing import Any, cast
 from urllib.parse import urljoin, urlparse
@@ -42,6 +43,7 @@ class RemoteJupyterClient:
         base_url: str,
         auth_token: str,
         timeout: int = 30,
+        jupyter_root: str = "/home/jovyan",
     ) -> None:
         """Initialize the remote Jupyter client.
 
@@ -51,10 +53,67 @@ class RemoteJupyterClient:
         :type auth_token: str
         :param timeout: HTTP request timeout in seconds
         :type timeout: int
+        :param jupyter_root: Absolute path to the Jupyter server root on the remote
+            filesystem (e.g., ``'/home/jovyan'``).  Used to convert absolute paths
+            to Contents API-relative paths.
+        :type jupyter_root: str
         """
         self.base_url = base_url.rstrip("/")
         self.auth_token = auth_token
         self.timeout = timeout
+        self.jupyter_root = jupyter_root
+
+    def _to_api_path(self, absolute_path: str) -> str:
+        """Convert an absolute remote filesystem path to a Contents API path.
+
+        The Contents API uses paths relative to ``jupyter_root``.  This helper
+        normalises *absolute_path* and expresses it relative to
+        ``self.jupyter_root``.
+
+        :param absolute_path: Absolute path on the remote filesystem.
+        :type absolute_path: str
+        :return: Path suitable for use with the Contents API (no leading slash).
+        :rtype: str
+        :raises ValueError: If *absolute_path* is outside ``self.jupyter_root``.
+        """
+        jupyter_root_abs = posixpath.normpath(self.jupyter_root)
+        abs_path = posixpath.normpath(absolute_path)
+        api_path = posixpath.relpath(abs_path, jupyter_root_abs)
+        if api_path.startswith(".."):
+            raise ValueError(
+                f"Path {absolute_path!r} is outside jupyter_root {self.jupyter_root!r}"
+            )
+        return api_path
+
+    def _resolve_path(self, path: str) -> str:
+        """Resolve *path* to a Contents API-relative path, accepting both absolute
+        and relative inputs.
+
+        Absolute paths (starting with ``/``) are converted via
+        :meth:`_to_api_path`, which validates that they are within
+        ``jupyter_root``.
+
+        Relative paths are normalised with :func:`posixpath.normpath` and
+        validated to ensure they do not escape the root via ``..`` traversal
+        (e.g. ``../../etc/passwd`` is rejected).
+
+        :param path: Either an absolute filesystem path or a path already
+            relative to the Jupyter root.
+        :type path: str
+        :return: Path suitable for use with the Contents API (no leading slash,
+            no ``..`` components that escape the root).
+        :rtype: str
+        :raises ValueError: If *path* is absolute and outside ``jupyter_root``,
+            or if *path* is relative and contains escaping ``..`` components.
+        """
+        if posixpath.isabs(path):
+            return self._to_api_path(path)
+        normalised = posixpath.normpath(path)
+        if normalised.startswith(".."):
+            raise ValueError(
+                f"Relative path {path!r} escapes the Jupyter root via '..' components"
+            )
+        return normalised
 
     def _get_auth_headers(self) -> dict[str, str]:
         """Build authentication headers for requests.
@@ -356,85 +415,67 @@ class RemoteJupyterClient:
         return {"error": error, "result": result}
 
     async def create_session_directory(
-        self, kernel_id: str, session_dir: str, created_at: float, last_access: float
+        self, session_dir: str, created_at: float, last_access: float
     ) -> None:
-        """Create a session directory with metadata file via kernel execution.
+        """Create a session directory with metadata file via the Contents API.
 
-        :param kernel_id: ID of the kernel to execute code in
-        :type kernel_id: str
-        :param session_dir: Path to session directory
+        :param session_dir: Absolute path to the session directory on the remote
+            filesystem.
         :type session_dir: str
-        :param created_at: Session creation timestamp
+        :param created_at: Session creation timestamp.
         :type created_at: float
-        :param last_access: Session last access timestamp
+        :param last_access: Session last access timestamp.
         :type last_access: float
-        :raises JupyterExecutionError: If directory creation fails
+        :raises JupyterConnectionError: If the Contents API call fails.
+        :raises ValueError: If *session_dir* is outside ``self.jupyter_root``.
         """
-        code = f"""
-import os
-import json
-
-# Create session directory
-os.makedirs({repr(session_dir)}, exist_ok=True)
-
-# Create metadata file
-metadata = {{
-    'created_at': {created_at},
-    'last_access': {last_access}
-}}
-with open(os.path.join({repr(session_dir)}, '.session.json'), 'w') as f:
-    json.dump(metadata, f, indent=2)
-"""
-        result = await self.execute(kernel_id, code)
-        if result["error"]:
-            raise JupyterExecutionError(
-                f"Failed to create session directory: {'; '.join(result['error'])}"
-            )
+        self.create_directory(session_dir)
+        metadata = json.dumps(
+            {"created_at": created_at, "last_access": last_access}, indent=2
+        )
+        self.put_contents(f"{session_dir}/session_meta.json", metadata, format="text")
 
     async def update_session_metadata(
-        self, kernel_id: str, session_dir: str, last_access: float
+        self, session_dir: str, last_access: float
     ) -> None:
         """Update session metadata file with new last_access timestamp.
 
-        :param kernel_id: ID of the kernel to execute code in
-        :type kernel_id: str
-        :param session_dir: Path to session directory
+        Reads ``session_meta.json`` from the session directory via the Contents
+        API, updates ``last_access``, and writes it back.  If the metadata file
+        does not yet exist a new one is created with only ``last_access`` set.
+
+        :param session_dir: Absolute path to the session directory on the remote
+            filesystem.
         :type session_dir: str
-        :param last_access: New last access timestamp
+        :param last_access: New last access timestamp.
         :type last_access: float
-        :raises JupyterExecutionError: If update fails
+        :raises JupyterConnectionError: If the Contents API call fails.
+        :raises ValueError: If *session_dir* is outside ``self.jupyter_root``.
         """
-        code = f"""
-import os
-import json
-
-metadata_path = os.path.join({repr(session_dir)}, '.session.json')
-if not os.path.exists(metadata_path):
-    raise FileNotFoundError(f"Session metadata file not found: {{metadata_path}}")
-
-with open(metadata_path, 'r') as f:
-    metadata = json.load(f)
-metadata['last_access'] = {last_access}
-with open(metadata_path, 'w') as f:
-    json.dump(metadata, f, indent=2)
-print("Metadata updated successfully")
-"""
-        result = await self.execute(kernel_id, code)
-        if result["error"]:
-            raise JupyterExecutionError(
-                f"Failed to update session metadata: {'; '.join(result['error'])}"
-            )
+        meta_path = f"{session_dir}/session_meta.json"
+        try:
+            contents = self.get_file_contents(meta_path)
+            metadata = json.loads(contents["content"])
+        except JupyterConnectionError:
+            metadata = {}
+        metadata["last_access"] = last_access
+        self.put_contents(meta_path, json.dumps(metadata, indent=2), format="text")
 
     def get_contents(self, path: str) -> dict[str, Any]:
         """Get directory or file information from Jupyter Contents API.
 
-        :param path: Path to directory or file (e.g., '.' for current directory)
+        :param path: Path to directory or file — either an absolute filesystem
+            path or a path relative to the Jupyter root
+            (e.g., ``'.'`` for the root directory).
         :type path: str
         :return: Contents API response as dictionary with metadata
         :rtype: dict[str, Any]
         :raises JupyterConnectionError: If path not found (404) or connection fails
         :raises JupyterAuthError: If permission denied (403)
+        :raises ValueError: If *path* is outside ``jupyter_root`` or escapes via
+            ``..`` components.
         """
+        path = self._resolve_path(path)
         try:
             response = self._make_request("GET", f"/api/contents/{path}")
             return cast(dict[str, Any], response.json())
@@ -450,7 +491,8 @@ print("Metadata updated successfully")
         Retrieves file content (text or base64-encoded binary) via
         ``GET /api/contents/{path}?content=1&type=file``.
 
-        :param path: Path to the file relative to the Jupyter root
+        :param path: Path to the file — either an absolute filesystem path or a
+            path relative to the Jupyter root
             (e.g., ``'sessions/abc123/data.csv'``).
         :type path: str
         :return: Contents API response dict with at minimum ``format``
@@ -459,7 +501,10 @@ print("Metadata updated successfully")
         :raises JupyterConnectionError: If the file is not found (404) or
             the connection fails.
         :raises JupyterAuthError: If permission is denied (401/403).
+        :raises ValueError: If *path* is outside ``jupyter_root`` or escapes via
+            ``..`` components.
         """
+        path = self._resolve_path(path)
         try:
             response = self._make_request(
                 "GET", f"/api/contents/{path}", params={"content": "1", "type": "file"}
@@ -478,7 +523,8 @@ print("Metadata updated successfully")
         Sends ``PUT /api/contents/{path}`` with a JSON body containing
         ``{"type": "file", "format": format, "content": content}``.
 
-        :param path: Destination path relative to the Jupyter root
+        :param path: Destination path — either an absolute filesystem path or a
+            path relative to the Jupyter root
             (e.g., ``'sessions/abc123/output.txt'``).
         :type path: str
         :param content: File content.  Plain text for ``format="text"``;
@@ -490,7 +536,10 @@ print("Metadata updated successfully")
         :rtype: dict[str, Any]
         :raises JupyterConnectionError: If the connection fails.
         :raises JupyterAuthError: If permission is denied (401/403).
+        :raises ValueError: If *path* is outside ``jupyter_root`` or escapes via
+            ``..`` components.
         """
+        path = self._resolve_path(path)
         payload = {"type": "file", "format": format, "content": content}
         response = self._make_request("PUT", f"/api/contents/{path}", json=payload)
         return cast(dict[str, Any], response.json())
@@ -502,11 +551,15 @@ print("Metadata updated successfully")
         each path component that does not yet exist.  Ignores 409 Conflict
         responses (directory already exists).
 
-        :param path: Directory path relative to the Jupyter root.
+        :param path: Directory path — either an absolute filesystem path or a
+            path relative to the Jupyter root.
         :type path: str
         :raises JupyterConnectionError: If the connection fails.
         :raises JupyterAuthError: If permission is denied (401/403).
+        :raises ValueError: If *path* is outside ``jupyter_root`` or escapes via
+            ``..`` components.
         """
+        path = self._resolve_path(path)
         # Build list of ancestor paths to ensure all intermediate dirs exist
         parts = path.replace("\\", "/").split("/")
         dirs_to_create = []
@@ -532,14 +585,18 @@ print("Metadata updated successfully")
         Uses ``GET /api/contents/{path}?content=0`` to test for existence
         without fetching the file content.
 
-        :param path: Path to check relative to the Jupyter root.
+        :param path: Path to check — either an absolute filesystem path or a
+            path relative to the Jupyter root.
         :type path: str
         :return: ``True`` if the path exists, ``False`` if it does not (404).
         :rtype: bool
         :raises JupyterConnectionError: If the connection fails for reasons
             other than a 404.
         :raises JupyterAuthError: If permission is denied (401/403).
+        :raises ValueError: If *path* is outside ``jupyter_root`` or escapes via
+            ``..`` components.
         """
+        path = self._resolve_path(path)
         try:
             self._make_request("GET", f"/api/contents/{path}", params={"content": "0"})
             return True

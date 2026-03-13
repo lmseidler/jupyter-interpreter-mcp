@@ -26,7 +26,12 @@ async def test_session_restoration_with_real_server() -> None:
         pytest.skip("JUPYTER_BASE_URL and JUPYTER_TOKEN required")
 
     client = RemoteJupyterClient(base_url=base_url, auth_token=token)
-    session_dir = f"/tmp/jupyter-interpreter-mcp-tests/{uuid.uuid4()}"
+    session_dir = f"/home/jovyan/jupyter-interpreter-mcp-tests/{uuid.uuid4()}"
+
+    # Ensure the session directory exists on the remote side before
+    # dump_to_file/load_from_file use the Contents API.
+    api_session_dir = client._to_api_path(session_dir)
+    client.create_directory(api_session_dir)
 
     notebook1 = Notebook("restore-test-1", client, session_dir)
     notebook2 = Notebook("restore-test-2", client, session_dir)

@@ -136,16 +136,14 @@ class TestDumpToFile:
 
         await notebook.dump_to_file()
 
-        # Verify execute was called
-        mock_remote_client.execute.assert_called()
-        call_args = mock_remote_client.execute.call_args
-        code = call_args[0][1]
+        # Verify put_contents was called with the serialised history
+        mock_remote_client.put_contents.assert_called_once()
+        call_args = mock_remote_client.put_contents.call_args
+        content = call_args[0][1]
 
-        # Verify the code contains file write operations
-        assert "os.makedirs" in code
-        assert notebook.file_path in code
-        assert "with open" in code
-        assert repr(notebook.history) in code
+        # Verify the content contains the history lines
+        assert "\nprint('test1')" in content
+        assert "\nprint('test2')" in content
 
     @pytest.mark.asyncio
     async def test_dump_to_file_empty_history(self, mock_remote_client):
@@ -160,8 +158,8 @@ class TestDumpToFile:
         # History is empty by default
         await notebook.dump_to_file()
 
-        # Should still call execute
-        mock_remote_client.execute.assert_called()
+        # Should still call put_contents (even for empty history)
+        mock_remote_client.put_contents.assert_called_once()
 
 
 class TestLoadFromFile:
@@ -177,28 +175,15 @@ class TestLoadFromFile:
         )
         await notebook.connect()
 
-        # Mock execute responses
-        call_count = [0]
-
-        async def mock_execute(kernel_id, code):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                # First call: reading the file
-                return {
-                    "error": [],
-                    "result": ["FILE_CONTENT_START\nx = 10\nFILE_CONTENT_END\n"],
-                }
-            else:
-                # Second call: re-executing the content
-                return {"error": [], "result": []}
-
-        mock_remote_client.execute.side_effect = mock_execute
+        # Mock get_file_contents to return file content, and execute for re-execution
+        mock_remote_client.get_file_contents.return_value = {"content": "x = 10\n"}
+        mock_remote_client.execute.return_value = {"error": [], "result": []}
 
         result = await notebook.load_from_file()
 
         assert result is True
-        # Should call execute twice: once to read, once to restore
-        assert mock_remote_client.execute.call_count == 2
+        # Should call execute once to re-execute the restored content
+        assert mock_remote_client.execute.call_count == 1
         # Restored history should contain only restored user code
         assert notebook.history == ["x = 10"]
 
@@ -212,11 +197,8 @@ class TestLoadFromFile:
         )
         await notebook.connect()
 
-        # Mock execute to simulate file not found
-        mock_remote_client.execute.return_value = {
-            "error": [],
-            "result": ["FILE_NOT_FOUND\n"],
-        }
+        # Mock check_exists to return False (file does not exist → fresh session)
+        mock_remote_client.check_exists.return_value = False
 
         result = await notebook.load_from_file()
 
@@ -233,11 +215,10 @@ class TestLoadFromFile:
         )
         await notebook.connect()
 
-        # Mock execute to simulate error during file read
-        mock_remote_client.execute.return_value = {
-            "error": ["Error: OSError: Cannot read file"],
-            "result": [],
-        }
+        # Mock get_file_contents to raise a generic exception (read error)
+        mock_remote_client.get_file_contents.side_effect = Exception(
+            "Error: OSError: Cannot read file"
+        )
 
         result = await notebook.load_from_file()
 
@@ -253,8 +234,8 @@ class TestLoadFromFile:
         )
         await notebook.connect()
 
-        # Mock execute to raise exception
-        mock_remote_client.execute.side_effect = Exception("Unexpected error")
+        # Mock get_file_contents to raise exception
+        mock_remote_client.get_file_contents.side_effect = Exception("Unexpected error")
 
         result = await notebook.load_from_file()
 
