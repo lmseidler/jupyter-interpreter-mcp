@@ -498,7 +498,7 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
         session, api_path = await _validate_session_and_path(session_id, path)
 
         # Prevent access to sensitive files within the sandbox
-        if is_sensitive_file(Path(api_path)):
+        if is_sensitive_file(api_path):
             return {"error": "Access to this file is restricted for security reasons."}
 
         # Fetch file content via Contents API
@@ -535,7 +535,7 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
                 "filename": filename,
             }
         else:
-            # Other formats (e.g. JSON notebooks) — serialize to text to avoid non-string content
+            # Other formats (e.g. JSON notebooks)
             try:
                 serialized_content = json.dumps(raw_content, ensure_ascii=False)
             except TypeError:
