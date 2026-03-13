@@ -490,12 +490,16 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
     :rtype: dict[str, str]
     """
     from jupyter_interpreter_mcp.remote import JupyterConnectionError
-    from jupyter_interpreter_mcp.session import detect_content_type
+    from jupyter_interpreter_mcp.session import detect_content_type, is_sensitive_file
 
     global remote_client
 
     try:
         session, api_path = await _validate_session_and_path(session_id, path)
+
+        # Prevent access to sensitive files within the sandbox
+        if is_sensitive_file(Path(api_path)):
+            return {"error": "Access to this file is restricted for security reasons."}
 
         # Fetch file content via Contents API
         try:
@@ -523,10 +527,21 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
                     "encoding": "text",
                     "filename": filename,
                 }
-        else:
+        elif file_format == "text":
             # Text file
             response = {
                 "content": raw_content,
+                "encoding": "text",
+                "filename": filename,
+            }
+        else:
+            # Other formats (e.g. JSON notebooks) — serialize to text to avoid non-string content
+            try:
+                serialized_content = json.dumps(raw_content, ensure_ascii=False)
+            except TypeError:
+                serialized_content = str(raw_content)
+            response = {
+                "content": serialized_content,
                 "encoding": "text",
                 "filename": filename,
             }
