@@ -295,8 +295,8 @@ class TestLazySessionRestore:
         assert result["error"] == []
         assert result["session_id"] == session_id
         mock_restore.assert_awaited_once_with(session_id)
-        server.remote_client.update_session_metadata.assert_awaited_once()
-        mock_notebook.dump_to_file.assert_awaited_once()
+        server.remote_client.update_session_metadata.assert_called_once()
+        mock_notebook.dump_to_file.assert_called_once()
 
 
 class TestStartupRestoreConfiguration:
@@ -370,6 +370,7 @@ class TestListDirTool:
         mock_session = Mock(spec=Session)
         mock_session.directory = "/home/jovyan/sessions/test-session"
         mock_session.kernel_id = "test-kernel"
+        mock_session.created_at = time.time()
         mock_session.last_access = time.time()
         mock_session.is_expired.return_value = False
         mock_sessions["test-session"] = mock_session
@@ -426,6 +427,7 @@ class TestListDirTool:
         mock_session = Mock(spec=Session)
         mock_session.directory = "/home/jovyan/sessions/test-session"
         mock_session.kernel_id = "test-kernel"
+        mock_session.created_at = time.time()
         mock_session.last_access = time.time()
         mock_session.is_expired.return_value = False
         mock_sessions["test-session"] = mock_session

@@ -342,29 +342,25 @@ class RemoteJupyterClient:
         self.put_contents(f"{session_dir}/session_meta.json", metadata, format="text")
 
     async def update_session_metadata(
-        self, session_dir: str, last_access: float
+        self, session_dir: str, created_at: float, last_access: float
     ) -> None:
         """Update session metadata file with new last_access timestamp.
 
-        Reads ``session_meta.json`` from the session directory via the Contents
-        API, updates ``last_access``, and writes it back.  If the metadata file
-        does not yet exist a new one is created with only ``last_access`` set.
+        Writes ``session_meta.json`` directly to the session directory via the
+        Contents API without reading the existing file first.
 
         :param session_dir: Absolute path to the session directory on the remote
             filesystem.
         :type session_dir: str
+        :param created_at: Session creation timestamp.
+        :type created_at: float
         :param last_access: New last access timestamp.
         :type last_access: float
         :raises JupyterConnectionError: If the Contents API call fails.
         :raises ValueError: If *session_dir* is outside ``self.jupyter_root``.
         """
         meta_path = f"{session_dir}/session_meta.json"
-        try:
-            contents = self.get_file_contents(meta_path)
-            metadata = json.loads(contents["content"])
-        except JupyterConnectionError:
-            metadata = {}
-        metadata["last_access"] = last_access
+        metadata = {"created_at": created_at, "last_access": last_access}
         self.put_contents(meta_path, json.dumps(metadata, indent=2), format="text")
 
     def get_contents(self, path: str) -> dict[str, Any]:

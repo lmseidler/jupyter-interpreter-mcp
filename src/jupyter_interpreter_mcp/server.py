@@ -455,8 +455,10 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
 
         # Update last access time
         session.touch()
-        await remote_client.update_session_metadata(
-            session.directory, session.last_access
+        asyncio.create_task(
+            remote_client.update_session_metadata(
+                session.directory, session.created_at, session.last_access
+            )
         )
 
         # Add session_id to the response
@@ -467,7 +469,7 @@ async def execute_code(code: str, session_id: str) -> dict[str, list[str] | str]
         }
 
         if len(result["error"]) == 0:
-            await notebook.dump_to_file()
+            asyncio.create_task(notebook.dump_to_file())
 
         return response
     except ValueError as e:
@@ -563,8 +565,10 @@ async def download_file(session_id: str, path: str) -> dict[str, str]:
 
         # Update last access
         session.touch()
-        await remote_client.update_session_metadata(
-            session.directory, session.last_access
+        asyncio.create_task(
+            remote_client.update_session_metadata(
+                session.directory, session.created_at, session.last_access
+            )
         )
 
         return response
@@ -693,8 +697,10 @@ async def upload_file_path(
 
         # Update last access
         session.touch()
-        await remote_client.update_session_metadata(
-            session.directory, session.last_access
+        asyncio.create_task(
+            remote_client.update_session_metadata(
+                session.directory, session.created_at, session.last_access
+            )
         )
 
         # Return success with relative sandbox_path so agents can
@@ -820,8 +826,10 @@ async def list_dir(session_id: str, path: str = "") -> dict[str, list[str] | str
         # Update last access
         session.touch()
         # Still update metadata on remote side for persistence
-        await remote_client.update_session_metadata(
-            session.directory, session.last_access
+        asyncio.create_task(
+            remote_client.update_session_metadata(
+                session.directory, session.created_at, session.last_access
+            )
         )
 
         return {"error": "", "result": result_lines}
@@ -927,8 +935,10 @@ async def read_file(
         numbered = [f"{start_idx + 1 + i}: {line}" for i, line in enumerate(window)]
 
         session.touch()
-        await remote_client.update_session_metadata(
-            session.directory, session.last_access
+        asyncio.create_task(
+            remote_client.update_session_metadata(
+                session.directory, session.created_at, session.last_access
+            )
         )
 
         return {
@@ -996,8 +1006,10 @@ async def write_file(
         remote_client.put_contents(api_path, content, format="text")
 
         session.touch()
-        await remote_client.update_session_metadata(
-            session.directory, session.last_access
+        asyncio.create_task(
+            remote_client.update_session_metadata(
+                session.directory, session.created_at, session.last_access
+            )
         )
 
         return {
@@ -1094,8 +1106,10 @@ async def edit_file(
         remote_client.put_contents(api_path, new_content, format="text")
 
         session.touch()
-        await remote_client.update_session_metadata(
-            session.directory, session.last_access
+        asyncio.create_task(
+            remote_client.update_session_metadata(
+                session.directory, session.created_at, session.last_access
+            )
         )
 
         return {
